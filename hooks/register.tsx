@@ -1,24 +1,18 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register } from "claude-code"
 
-import type { Picker, PickerOption, Setting } from "../types"
+import type { Picker, Setting } from "../types"
 
+import { Channel } from "./channel"
 import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
 import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { FIND_PLAYER, playCommand, trimCommand } from "./player"
 import { SpeechProcess } from "./process"
+import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
 import { SpeechSplitter, toSentences } from "./speech-text"
 
-const MODES: readonly ReadMode[] = ["stream", "final", "notify"]
-const MODE_LABELS: Record<ReadMode, string> = {
-  stream: "stream  返答を一文ずつ、流れてくるそばから",
-  final: "final   ターンが終わってから最終的な返答だけ",
-  notify: "notify  完了・エラーなどの短い通知だけ",
-}
-const SPEEDS = ["0.8", "1", "1.2", "1.5", "2"]
-const VOLUMES = ["0.5", "0.75", "1", "1.25", "1.5"]
 const HELP = [
   "/tts                   state: on/off, mode, engine, speed, volume",
   "/tts on | off          read replies aloud or not",
@@ -43,35 +37,8 @@ const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, n
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
 
-/** An unbounded queue whose `take` waits for the next item. */
-class Channel<T> {
-  private items: T[] = []
-  private waiter: (() => void) | undefined
-
-  get size(): number {
-    return this.items.length
-  }
-
-  push(item: T) {
-    this.items.push(item)
-    this.waiter?.()
-    this.waiter = undefined
-  }
-
-  async take(): Promise<T> {
-    while (this.items.length === 0) await new Promise<void>(resolve => (this.waiter = resolve))
-    return this.items.shift() as T
-  }
-}
-
 /** How much of one model response has been queued; past the limit the rest is dropped. */
 type Budget = { spoken: number; isCut: boolean }
-
-/** A setting change ready to save: where it goes, and how it reads before and after. */
-type Change =
-  | { label: string; previous: string; next: string; config: { key: string; value: string | number } }
-  | { label: string; previous: string; next: string; pins: (stored: Pins) => Pins }
-  | { error: string }
 
 /** `cacheAs` keeps the synthesized clip at that path for the next time. */
 type Sentence = { text: string; generation: number; cacheAs?: string }
@@ -116,44 +83,8 @@ export const register: Register = (on, options) => {
     recheckEngine()
   }
 
-  /** What saving `value` for `setting` changes; while pinned, engine and voice go to the pin. */
-  const planChange = (setting: Setting, value: string): Change => {
-    const pin = pins[cwd]
-    const pinned = (update: (base: Pin) => Pin) => (stored: Pins) => {
-      const base = stored[cwd] ?? pin
-      return base === undefined ? stored : { ...stored, [cwd]: update(base) }
-    }
-    switch (setting) {
-      case "mode":
-        if (!MODES.includes(value as ReadMode)) return { error: `mode is one of ${MODES.join(", ")}` }
-        return { label: "mode", previous: config.mode, next: value, config: { key: "tts.mode", value } }
-      case "speed":
-      case "volume": {
-        const scale = Number(value)
-        if (!(scale > 0 && scale <= 4)) return { error: `${setting} is a number above 0, up to 4` }
-        const previous = String(setting === "speed" ? options.speed : config.volume)
-        return { label: setting, previous, next: String(scale), config: { key: `tts.${setting}`, value: scale } }
-      }
-      case "engine": {
-        if (!(value in ENGINES)) return { error: `engine is one of ${Object.keys(ENGINES).join(", ")}` }
-        const name = value as EngineName
-        if (pin === undefined) return { label: "engine", previous: config.engine, next: name, config: { key: "tts.engine", value: name } }
-        return { label: "engine (this directory)", previous: config.engine, next: name, pins: pinned(base => ({ ...base, engine: name })) }
-      }
-      case "voice": {
-        const { voices } = engine
-        if (voices === undefined) return { error: `engine=${config.engine} has no voices; set it up in /config` }
-        if (pin === undefined) return { label: "voice", previous: voices.current, next: value, config: voices.select(value) }
-        const name = config.engine
-        return {
-          label: "voice (this directory)",
-          previous: voices.current,
-          next: value,
-          pins: pinned(base => ({ ...base, voices: { ...base.voices, [name]: value } })),
-        }
-      }
-    }
-  }
+  /** What saving `value` for `setting` changes, against the settings in effect here. */
+  const changeOf = (setting: Setting, value: string) => planChange(setting, value, { options, config, engine, cwd, pin: pins[cwd] })
 
   /** Invalidates queued speech and closes the active synthesis and playback streams. */
   const stop = async () => {
@@ -287,6 +218,7 @@ export const register: Register = (on, options) => {
     // Checked at once, so a start or an engine switch shows a dead engine before anything is read.
     recheckEngine = () => {
       showEngineIssue(undefined)
+      if (!isEnabled) return
       const checked = engine
       void checkEngine($, checked).then(state => {
         if (checked === engine && state !== "ok") showEngineIssue(`${config.engine} ${state}`)
@@ -298,6 +230,8 @@ export const register: Register = (on, options) => {
       name: "tts",
       description: "Read replies aloud: on, off, stop, test, mode, engine, voice, speed, volume, pin, unpin, config, help",
       argumentHint: "[on|off|stop|test [text]|mode|engine|voice|speed|volume [value]|pin|unpin|config|help]",
+      // `/tts stop` has to land while a reply is still being read.
+      immediate: true,
     })
     return started
   })
@@ -306,9 +240,16 @@ export const register: Register = (on, options) => {
     await stop()
     cachedNotices.clear()
     if (directory !== "") await $.process.run(["rm", "-rf", "--", directory])
+    directory = ""
     await update($, audioDirectory, () => null)
-    // /clear and resume keep this module alive without another session.start.
-    if (e.reason === "clear" || e.reason === "resume") directory = await prepareDirectory($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // /clear, resume and /branch keep this module alive without another session.start, and reset
+  // $.state, which holds the directory for the next reload to remove.
+  on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
+    if (directory === "") directory = await prepareDirectory($)
+    else await update($, audioDirectory, () => directory)
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -350,7 +291,7 @@ export const register: Register = (on, options) => {
           }
           return { text: [`${config.engine} voices (/tts voice <id>):`, ...options.map(optionLine)].join("\n") }
         }
-        return { text: await commit($, planChange("voice", voice), applyPins) }
+        return { text: await commit($, changeOf("voice", voice), applyPins) }
       }
       case "mode": {
         const name = rest[0] as ReadMode | undefined
@@ -361,7 +302,7 @@ export const register: Register = (on, options) => {
           }
           return { text: `mode: ${config.mode} (${MODES.join(" | ")})` }
         }
-        return { text: await commit($, planChange("mode", name), applyPins) }
+        return { text: await commit($, changeOf("mode", name), applyPins) }
       }
       case "speed":
       case "volume": {
@@ -374,7 +315,7 @@ export const register: Register = (on, options) => {
           }
           return { text: `${action}: ${current}` }
         }
-        return { text: await commit($, planChange(action, value), applyPins) }
+        return { text: await commit($, changeOf(action, value), applyPins) }
       }
       case "pin": {
         const pin: Pin = { engine: config.engine, voices: engine.voices ? { [config.engine]: engine.voices.current } : {} }
@@ -400,7 +341,7 @@ export const register: Register = (on, options) => {
           const rows = await Promise.all(names.map(each => engineRow($, each, ENGINES[each].load(options), config)))
           return { text: ["engines (● answers, ○ down or unset; /tts engine <name> switches):", ...rows].join("\n") }
         }
-        return { text: await commit($, planChange("engine", name), applyPins) }
+        return { text: await commit($, changeOf("engine", name), applyPins) }
       }
       case "help":
         return { text: HELP }
@@ -446,7 +387,7 @@ export const register: Register = (on, options) => {
           autoFocus
           onSelect={async value => {
             await $.ui.close({ id: PICKER_PANE })
-            $.ui.toast(`tts: ${await commit($, planChange(shown.setting, value), applyPins)}`)
+            $.ui.toast(`tts: ${await commit($, changeOf(shown.setting, value), applyPins)}`)
           }}
         />
       </Box>
@@ -525,6 +466,20 @@ export const register: Register = (on, options) => {
   })
 }
 
+/** Creates an owner-only directory, removing the previous module's files after a reload. */
+async function prepareDirectory($: EngineInterface): Promise<string> {
+  const previous = await read($, audioDirectory)
+  if (previous !== null) await $.process.run(["rm", "-rf", "--", previous])
+  const created = await $.process.run(["mktemp", "-d", "/tmp/claude-tts-XXXXXXXXXX"])
+  if (created.exitCode !== 0 || created.stdout.trim() === "") throw new Error("tts: could not create a private audio directory")
+  const directory = created.stdout.trim()
+  await update($, audioDirectory, () => directory)
+  return directory
+}
+
+
+// Everything handed $ stays in this file: the validator follows $ into this file's functions only.
+
 /** Runs an engine's commands for one sentence; throws on the first that fails. */
 async function synthesize(
   $: EngineInterface,
@@ -544,17 +499,6 @@ async function synthesize(
     }
     stdout = ran.stdout
   }
-}
-
-/** Creates an owner-only directory, removing the previous module's files after a reload. */
-async function prepareDirectory($: EngineInterface): Promise<string> {
-  const previous = await read($, audioDirectory)
-  if (previous !== null) await $.process.run(["rm", "-rf", "--", previous])
-  const created = await $.process.run(["mktemp", "-d", "/tmp/claude-tts-XXXXXXXXXX"])
-  if (created.exitCode !== 0 || created.stdout.trim() === "") throw new Error("tts: could not create a private audio directory")
-  const directory = created.stdout.trim()
-  await update($, audioDirectory, () => directory)
-  return directory
 }
 
 /** A cancellable command with the same time limit synthesis had under process.run. */
@@ -605,10 +549,6 @@ async function openPicker($: EngineInterface, shown: Picker): Promise<boolean> {
   return opened.isPlaced
 }
 
-/** A choice as a text listing shows it: its id, then its name where it has one. */
-function optionLine(option: PickerOption): string {
-  return option.label === undefined ? `  ${option.value}` : `  ${option.value}: ${option.label}`
-}
 
 /**
  * Saves a change, to `/config` (which reloads the module) or to this
