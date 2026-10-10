@@ -38,6 +38,15 @@ export function prepareAudioCommand(file: string, player: string | undefined, is
 }
 
 /**
+ * PowerShell that plays the wav at `path` (a PowerShell expression) to its end. The file goes in
+ * as a stream: SoundPlayer given a \\wsl.localhost path with capitals plays nothing, without error.
+ */
+function soundPlayerScript(path: string, variable = "$"): string {
+  const stream = `${variable}stream`
+  return `${stream} = [IO.File]::OpenRead(${path}); try { (New-Object Media.SoundPlayer ${stream}).PlaySync() } finally { ${stream}.Dispose() }`
+}
+
+/**
  * Plays `file` at `volume` (1 as synthesized), preserving the cached original.
  */
 export function playCommand(player: string, file: string, volume: number, isWindows = false): string[] {
@@ -62,11 +71,12 @@ export function playCommand(player: string, file: string, volume: number, isWind
         ...(isScaled ? [
           `if (Get-Command ffmpeg -CommandType Application -ErrorAction SilentlyContinue) { ffmpeg -loglevel error -y -i $file -af volume=${volume} ($file + '.v.wav'); if ($LASTEXITCODE -eq 0) { $file += '.v.wav' } }`,
         ] : []),
-        "(New-Object Media.SoundPlayer $file).PlaySync()",
+        soundPlayerScript("$file"),
       ].join("; "))
       // WSL: Windows reads the file through its \\wsl.localhost path.
       return shell(
-        `${scaleFile}exec powershell.exe -NoProfile -NonInteractive -Command "(New-Object Media.SoundPlayer '$(wslpath -w "$1")').PlaySync()"`,
+        // `\$` keeps sh from expanding PowerShell's variable.
+        `${scaleFile}exec powershell.exe -NoProfile -NonInteractive -Command "${soundPlayerScript(`'$(wslpath -w "$1")'`, "\\$")}"`,
       )
     default:
       return [player, file]
