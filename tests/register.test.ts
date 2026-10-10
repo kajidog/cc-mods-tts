@@ -151,8 +151,8 @@ test("the response budget caps actual characters and adds one cut notice", { opt
   await observed.idle()
   await settle()
   const spoken = observed.spoken()
-  const cut = spoken.indexOf("以下、省略します。")
-  expect(spoken.lastIndexOf("以下、省略します。")).toBe(cut)
+  const cut = spoken.indexOf("途中を省略します。")
+  expect(spoken.lastIndexOf("途中を省略します。")).toBe(cut)
   expect(spoken.slice(0, cut).join("").length).toBe(600)
 })
 
@@ -162,7 +162,7 @@ test("past the budget, the response's last sentence is still said after the cut 
   await $.turn.complete(completed(`${"あ".repeat(590)}。${"い".repeat(30)}。${"う".repeat(30)}。進めますか？`))
   await observed.idle()
   await settle()
-  expect(observed.spoken().slice(-2)).toEqual(["以下、省略します。", "進めますか？"])
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "進めますか？"])
 })
 
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {

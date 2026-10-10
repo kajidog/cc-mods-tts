@@ -173,7 +173,7 @@
       "type": "string",
       "title": "TTS notice: cut",
       "description": "Said where a response passes 'TTS: Max characters per response' and the rest is skipped. Empty: say nothing.",
-      "default": "以下、省略します。"
+      "default": "途中を省略します。"
     },
     "noticeCode": {
       "type": "string",
