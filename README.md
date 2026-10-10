@@ -114,6 +114,8 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 `ffplay` / `powershell` では、再生終了時に語尾が途切れるのを抑えるため、無音除去後の WAV に0.2秒の無音を足します。この処理には `ffmpeg` が必要です。`ffmpeg` がない場合は、無音除去・追加を行わず元の音声を再生します。
 
+WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由するため、負荷によって「ジリジリ」とノイズが混じることがあります。気になる場合は `/config` の `TTS: Player` を `powershell` にすると、Windows 側で直接再生するので改善します（文ごとに PowerShell を起動するため、文と文の間は少し空きます）。
+
 ## 設定
 
 設定はすべて `/config` の tts にまとめてます。項目名はどれも `TTS:` / `TTS notice:` で始まります。
