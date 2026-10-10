@@ -51,7 +51,7 @@
       "type": "number",
       "title": "TTS: Speed",
       "description": "Speech speed multiplier (Irodori: 0.25–4, VOICEVOX: speedScale). The mod does not enforce Irodori's lower limit; its server may reject values outside that range. engine=command ignores it.",
-      "default": 1
+      "default": 1.1
     },
     "volume": {
       "type": "number",

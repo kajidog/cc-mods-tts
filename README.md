@@ -129,7 +129,7 @@ WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由�
 | TTS: Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
 | TTS: Engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
 | TTS: Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
-| TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
+| TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1.1 |
 | TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
 | TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
 | TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「途中を省略します。」と言って残りを飛ばし、応答の最後の1文だけ読む。0 で無制限 | 600 |
