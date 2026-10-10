@@ -22,6 +22,12 @@ const PATH_OPENERS = /[([{<"'\x60]/
 /** A whole inline code span that is a path; only there, its folders may have spaces. */
 const CODE_PATH = new RegExp(String.raw`^(~|[A-Za-z]:)?((?:[\p{L}\p{N}\p{M}_.@+ -]*[/\\])+)(${PATH_NAME})${PATH_LINE}$`, "u")
 
+/** Where fenced code was skipped; the reader decides what, if anything, to say there. */
+export const SKIPPED_CODE: unique symbol = Symbol("skipped code")
+
+/** What a reply turns into for a listener: its sentences, and marks where code was skipped. */
+export type Spoken = string | typeof SKIPPED_CODE
+
 /**
  * Turns streamed Markdown into speakable sentences as early as possible:
  * complete sentences of the current line are released before its newline
@@ -31,12 +37,9 @@ export class SpeechSplitter {
   private partial = ""
   private fence: string | undefined
 
-  /** `codeNotice` is said where a fenced code block is skipped; empty: nothing. */
-  constructor(private readonly codeNotice = "") {}
-
-  push(text: string): string[] {
+  push(text: string): Spoken[] {
     this.partial += text
-    const sentences: string[] = []
+    const sentences: Spoken[] = []
 
     let newline = this.partial.indexOf("\n")
     while (newline >= 0) {
@@ -61,14 +64,14 @@ export class SpeechSplitter {
     return sentences
   }
 
-  flush(): string[] {
+  flush(): Spoken[] {
     const sentences = this.line(this.partial)
     this.partial = ""
     this.fence = undefined
     return sentences
   }
 
-  private line(text: string): string[] {
+  private line(text: string): Spoken[] {
     const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(text)
     if (this.fence !== undefined) {
       if (marker && marker[1]!.startsWith(this.fence) && marker[2]!.trim() === "") {
@@ -78,15 +81,15 @@ export class SpeechSplitter {
     }
     if (marker) {
       this.fence = marker[1]
-      return this.codeNotice === "" ? [] : [this.codeNotice]
+      return [SKIPPED_CODE]
     }
     return splitSentences(toSpeakable(text))
   }
 }
 
 /** A whole Markdown text as speakable sentences. */
-export function toSentences(text: string, codeNotice?: string): string[] {
-  const splitter = new SpeechSplitter(codeNotice)
+export function toSentences(text: string): Spoken[] {
+  const splitter = new SpeechSplitter()
   return [...splitter.push(text), ...splitter.flush()]
 }
 
@@ -182,13 +185,15 @@ function splitSentences(text: string): string[] {
   }
   sentences.push(text.slice(start))
   return sentences
-    .flatMap(capLength)
     .map(sentence => sentence.trim())
     .filter(sentence => SPEAKABLE.test(sentence))
 }
 
-/** Engines choke on very long input: split at a comma near the limit, else hard. */
-function capLength(sentence: string): string[] {
+/**
+ * Engines choke on very long input: split at a comma near the limit, else hard.
+ * Applied as a sentence is queued, so the response budget sees whole sentences.
+ */
+export function capLength(sentence: string): string[] {
   const pieces: string[] = []
   let rest = Array.from(sentence)
   while (rest.length > MAX_SENTENCE) {

@@ -1,5 +1,5 @@
 import type { Notices } from "./config"
-import { toSentences } from "./speech-text"
+import { type Spoken, toSentences } from "./speech-text"
 
 /** Tools whose call itself opens a dialog for the person; the rest open one only to ask permission. */
 export const DIALOG_TOOLS: ReadonlySet<string> = new Set(["AskUserQuestion", "ExitPlanMode"])
@@ -9,7 +9,7 @@ export const DIALOG_TOOLS: ReadonlySet<string> = new Set(["AskUserQuestion", "Ex
  * that is cached and plays at once (empty: none), then `detail`, synthesized
  * each time.
  */
-export type DialogSpeech = { notice: string; detail: string[] }
+export type DialogSpeech = { notice: string; detail: Spoken[] }
 
 export function dialogSpeech(tool: string, input: unknown, notices: Notices): DialogSpeech {
   const fields = (typeof input === "object" && input !== null ? input : {}) as Record<string, unknown>

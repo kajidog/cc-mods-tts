@@ -147,8 +147,8 @@ test("stop cancels an in-flight synthesis without falling back and frees the que
 test("the response budget stops before the sentence that passes it and adds one cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)
-  // Split into five sentences of 160 characters: three fit in 600, the fourth passes.
-  await $.turn.complete(completed("あ".repeat(800)))
+  // Five sentences of 160 characters: three fit in 600, the fourth passes.
+  await $.turn.complete(completed(`${"あ".repeat(159)}。`.repeat(5)))
   await observed.idle()
   await settle()
   const spoken = observed.spoken()
@@ -175,6 +175,41 @@ test("the sentence that passes the budget is said whole when it is the last", { 
   const spoken = observed.spoken()
   expect(spoken.slice(-2)).toEqual(["途中を省略します。", "このまま進めてもいいですか？"])
   expect(spoken.filter(sentence => sentence?.includes("進め"))).toHaveLength(1)
+})
+
+test("a last sentence longer than an engine takes is said whole after the cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  const last = `${"お".repeat(200)}ですか？`
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。${last}`))
+  await observed.idle()
+  await settle()
+  const spoken = observed.spoken()
+  const cut = spoken.indexOf("途中を省略します。")
+  expect(spoken.slice(cut + 1).join("")).toBe(last)
+})
+
+test("a last sentence too long to be a question is not said after the cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(400)}`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().at(-1)).toBe("途中を省略します。")
+})
+
+test("the code notice uses no budget and is never the last sentence", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(595)}。\n\`\`\`sh\nnpm test\n\`\`\`\n終わり。`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["コードは省略します。", "終わり。"])
+
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。進めますか？\n\`\`\`sh\nnpm test\n\`\`\``))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "進めますか？"])
 })
 
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
