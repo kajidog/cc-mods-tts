@@ -17,7 +17,7 @@ export type Step = {
  */
 export type Engine = {
   /** Reads this engine's settings, its own `userConfig` keys and the shared `speed`. */
-  load: (options: PluginOptions) => LoadedEngine
+  load: (options: PluginOptions, isWindows?: boolean) => LoadedEngine
 }
 
 export type LoadedEngine = {
@@ -47,7 +47,7 @@ export type LoadedEngine = {
 
 /** GETs `url` within a few seconds, failing on an error status. */
 export function curlProbe(url: string): string[] {
-  return ["curl", "-sS", "--fail", "-m", "3", "-o", "/dev/null", url]
+  return ["curl", "-sS", "--fail", "-m", "3", url]
 }
 
 /** POSTs stdin as JSON; with `out`, the response body goes to that file. */

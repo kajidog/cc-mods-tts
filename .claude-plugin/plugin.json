@@ -1,6 +1,6 @@
 {
   "name": "tts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Reads Claude's replies aloud as they stream, sentence by sentence, through VOICEVOX, Irodori-TTS or any command.",
   "author": {
     "name": "kajidog"
@@ -62,7 +62,7 @@
     "player": {
       "type": "string",
       "title": "Player",
-      "description": "How a wav is played. auto picks the first found of ffplay, paplay, aplay, afplay, powershell.exe.",
+      "description": "How a wav is played. auto: ffplay then powershell.exe on native Windows; ffplay, paplay, aplay, afplay, powershell.exe elsewhere.",
       "default": "auto",
       "options": [
         "auto",

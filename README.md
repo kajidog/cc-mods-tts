@@ -2,7 +2,7 @@
 
 Claude Code の mod（関数フックのプラグイン）。Claude の返答をストリーミング中に一文ずつ読み上げます。
 
-- 対応プラットフォーム: macOS / Linux / Windows（WSL）
+- 対応プラットフォーム: macOS / Linux / Windows（ネイティブ・WSL）
 - `turn.step` の text チャンクを文に分割し、合成と再生をパイプラインで流す（コードブロック・表・URL は読み上げから除外してます）
 - エンジン: [VOICEVOX](https://voicevox.hiroshiba.jp/) 互換 / [Irodori-TTS](https://github.com/Aratako/Irodori-TTS-Server) / 任意コマンド
 
@@ -10,7 +10,7 @@ Claude Code の mod（関数フックのプラグイン）。Claude の返答を
 
 ## セットアップ
 
-Claude Code 2.1.275 以降。どちらか一方で使えるようにできます。
+Claude Code 2.1.287 以降（Mods が既定で有効なバージョン）。どちらか一方で使えるようにできます。
 
 ### A. GitHub からインストール（使うだけなら）
 
@@ -39,6 +39,14 @@ claude --plugin-dir ~/cc-mods-tts
 2. `/tts engine` で voicevox が ● になっているか確認
 3. 声を変えたい場合は `/tts voice` で選ぶ（既定は「ずんだもん・ノーマル」）
 4. `/tts test` で鳴るか確認
+
+### Windows で使う場合
+
+Windows ネイティブの Claude Code で使えます。VOICEVOX も同じ Windows 上で起動すれば、既定の `http://localhost:50021` のまま接続できます。
+
+`player: auto` は `ffplay` があればそれを使い、なければ Windows 標準の PowerShell で再生します。この Mod のために WSL や `sh`・`mktemp` を追加する必要はありません。PowerShell 再生時の音量変更と、音声の前後の無音除去には `ffmpeg` が必要です。ない場合は元の音声を再生します。
+
+WSL 内のターミナルで動かす場合は Linux と同じ構成で、`powershell.exe` による Windows 側の再生も使えます。
 
 ### Irodori-TTS を使う場合
 
@@ -116,7 +124,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
 | Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
 | Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
-| Player（`player`） | 再生コマンド。`auto` は ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
+| Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
 | Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って止める。0 で無制限 | 600 |
 | Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
 | Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
@@ -138,19 +146,20 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限による入力エラーは出しませんが、範囲外の値は Irodori サーバーが拒否する場合があります。文字数の上限に、省略を知らせる通知文は含みません。
 
-音声ファイルは所有者だけがアクセスできる一時ディレクトリに保存し、再生後に削除します。通知キャッシュはセッション終了時・Mod の再読み込み時に削除します。プロセスの強制終了などで清掃が実行できなかった場合は、一時ディレクトリに残ることがあります。
+音声ファイルはセッション用の一時ディレクトリに保存し、再生後に削除します。macOS / Linux / WSL では所有者のみアクセスできる権限で作成し、Windows ネイティブではユーザーの一時フォルダ（`%TEMP%`）のアクセス権を引き継ぎます。通知キャッシュはセッション終了時・Mod の再読み込み時に削除します。プロセスの強制終了などで清掃が実行できなかった場合は、一時ディレクトリに残ることがあります。
 
 ## 前提
 
-- `curl`
+- `curl`（Windows では `curl.exe`）
 - `mktemp`（macOS / Linux / WSL の一時ディレクトリ作成に使用）
-- 再生: `ffplay` / `paplay` / `aplay` / `afplay` / `powershell.exe`（WSL）のいずれか（`player: auto` で自動選択）
+- Windows ネイティブ: Windows PowerShell（`powershell.exe`、一時ファイルの管理と再生に使用）
+- 再生: `ffplay` / `paplay` / `aplay` / `afplay` / `powershell.exe`（Windows・WSL）のいずれか（`player: auto` で自動選択）
 
 ## エンジンを追加する
 
 エンジンは `hooks/engines/` に1ファイルずつある（`irodori.ts` / `voicevox.ts` / `command.ts`）。追加するには:
 
-1. `hooks/engines/<name>.ts` に `Engine`（`engine.ts` の型）を書く。`load(options)` で自分の設定を読み、`synthesis(text, out)` で wav を `out` に書くコマンド列を返す。声の一覧があれば `voices` も
+1. `hooks/engines/<name>.ts` に `Engine`（`engine.ts` の型）を書く。`load(options, isWindows)` で自分の設定を読み、`synthesis(text, out)` で wav を `out` に書くコマンド列を返す。声の一覧があれば `voices` も
 2. `hooks/engines/index.ts` の `ENGINES` に足す
 3. `.claude-plugin/plugin.json` の `userConfig.engine.options` に名前を足し、そのエンジンの設定項目を追加する
 
@@ -164,7 +173,7 @@ npx -y -p typescript@5.8.3 tsc -p .
 claude plugin test .
 ```
 
-CI（`.github/workflows/ci.yml`）は main への push と PR で lint・validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
+CI（`.github/workflows/ci.yml`）は main への push と PR で lint を実行し、Linux・Windows で validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
 
 API は early access のため、Claude Code の更新で変わることがある（CI で確認しているバージョン: 2.1.296）。
 
