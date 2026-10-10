@@ -101,7 +101,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 どのモードでも、以下の操作待ちのダイアログが出たら読み上げを止めて通知します:
 
-| ダイアログ | 読む文（既定。`/config` の Notice で変えられる） |
+| ダイアログ | 読む文（既定。`/config` の TTS notice で変えられる） |
 |---|---|
 | 質問（AskUserQuestion） | 1件: 質問があります。＋質問文 / 複数: 質問が3件あります。 |
 | プランの承認（ExitPlanMode） | プランの確認をお願いします。 |
@@ -116,35 +116,38 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 ## 設定
 
-設定はすべて `/config` の tts にまとめてます。
+設定はすべて `/config` の tts にまとめてます。項目名はどれも `TTS:` / `TTS notice:` で始まります。
 
-以下、一覧
+<details>
+<summary>設定一覧</summary>
 
 | 項目（キー） | 内容 | 既定 |
 |---|---|---|
-| Enabled（`enabled`） | 読み上げる / 読み上げない | true |
-| Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
-| TTS engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
-| Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
-| Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
-| Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
-| Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
-| Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って止める。0 で無制限 | 600 |
-| Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
-| Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
-| Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
-| Irodori voice（`irodoriVoice`） | Irodori の声（`/tts voice` で選べる） | （未設定） |
-| VOICEVOX URL（`voicevoxUrl`） | VOICEVOX 互換エンジンの URL（AivisSpeech は `http://localhost:10101`） | `http://localhost:50021` |
-| VOICEVOX speaker（`voicevoxSpeaker`） | VOICEVOX のスタイル id（`/tts voice` で選べる） | 3 |
-| Command（`command`） | engine=command のときのコマンド。空白区切り、`{out}` が書き出す wav のパスに置き換わり、本文は標準入力で渡る | （未設定） |
-| Notice: done / error / refusal（`noticeDone` / `noticeError` / `noticeRefusal`） | notify モードでターン終了時に言う文 | 完了しました。/ エラーで止まりました。/ 応答できませんでした。 |
-| Notice: question（`noticeQuestion`） | 質問が1件出たとき、質問文の前に言う文 | 質問があります。 |
-| Notice: questions（`noticeQuestions`） | 質問が複数出たときに言う文。`{n}` が件数になる | 質問が{n}件あります。 |
-| Notice: plan（`noticePlan`） | プランの承認待ちで言う文 | プランの確認をお願いします。 |
-| Notice: command（`noticeCommand`） | Bash の許可ダイアログで、コマンドの説明の前に言う文 | コマンドの確認をお願いします。 |
-| Notice: tool（`noticeTool`） | その他のツールの許可ダイアログで言う文 | ツールの許可をお願いします。 |
-| Notice: cut（`noticeCut`） | 文字数の上限で読むのをやめたときに言う文 | 以下、省略します。 |
-| Notice: code（`noticeCode`） | コードブロックを飛ばすところで言う文（stream / final モード） | コードは省略します。 |
+| TTS: Enabled（`enabled`） | 読み上げる / 読み上げない | true |
+| TTS: Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
+| TTS: Engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
+| TTS: Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
+| TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
+| TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
+| TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
+| TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って止める。0 で無制限 | 600 |
+| TTS: Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
+| TTS: Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
+| TTS: Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
+| TTS: Irodori voice（`irodoriVoice`） | Irodori の声（`/tts voice` で選べる） | （未設定） |
+| TTS: VOICEVOX URL（`voicevoxUrl`） | VOICEVOX 互換エンジンの URL（AivisSpeech は `http://localhost:10101`） | `http://localhost:50021` |
+| TTS: VOICEVOX speaker（`voicevoxSpeaker`） | VOICEVOX のスタイル id（`/tts voice` で選べる） | 3 |
+| TTS: Command（`command`） | engine=command のときのコマンド。空白区切り、`{out}` が書き出す wav のパスに置き換わり、本文は標準入力で渡る | （未設定） |
+| TTS notice: done / error / refusal（`noticeDone` / `noticeError` / `noticeRefusal`） | notify モードでターン終了時に言う文 | 完了しました。/ エラーで止まりました。/ 応答できませんでした。 |
+| TTS notice: question（`noticeQuestion`） | 質問が1件出たとき、質問文の前に言う文 | 質問があります。 |
+| TTS notice: questions（`noticeQuestions`） | 質問が複数出たときに言う文。`{n}` が件数になる | 質問が{n}件あります。 |
+| TTS notice: plan（`noticePlan`） | プランの承認待ちで言う文 | プランの確認をお願いします。 |
+| TTS notice: command（`noticeCommand`） | Bash の許可ダイアログで、コマンドの説明の前に言う文 | コマンドの確認をお願いします。 |
+| TTS notice: tool（`noticeTool`） | その他のツールの許可ダイアログで言う文 | ツールの許可をお願いします。 |
+| TTS notice: cut（`noticeCut`） | 文字数の上限で読むのをやめたときに言う文 | 以下、省略します。 |
+| TTS notice: code（`noticeCode`） | コードブロックを飛ばすところで言う文（stream / final モード） | コードは省略します。 |
+
+</details>
 
 通知の文はどれも空にするとその通知の読み上げをスキップできます（注：スキップしても既存の再生は止まります）。  
 質問やコマンドの通知を空にした場合は、質問文・コマンドの説明も読みません。
