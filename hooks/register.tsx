@@ -40,8 +40,11 @@ const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, n
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
 
-/** How much of one model response has been queued; past the limit the rest is dropped. */
-type Budget = { spoken: number; isCut: boolean }
+/**
+ * How much of one model response has been queued; past the limit the rest is dropped,
+ * save its last sentence (`tail`), which `finishResponse` says: it often asks what to do next.
+ */
+type Budget = { spoken: number; isCut: boolean; tail?: string }
 
 /** `cacheAs` keeps the synthesized clip at that path for the next time. */
 type Sentence = { text: string; generation: number; cacheAs?: string }
@@ -107,19 +110,28 @@ export const register: Register = (on, options) => {
   const enqueue = (texts: readonly string[], budget?: Budget) => {
     for (const text of texts) {
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
-        if (budget.isCut) return
+        if (budget.isCut) {
+          budget.tail = text
+          continue
+        }
         const remaining = Math.max(0, Math.floor(config.maxCharsPerTurn - budget.spoken))
         const characters = Array.from(text)
         if (characters.length > remaining) {
           if (remaining > 0) sentences.push({ text: characters.slice(0, remaining).join(""), generation })
           budget.isCut = true
           if (config.notices.cut !== "") sentences.push({ text: config.notices.cut, generation })
-          return
+          continue
         }
         budget.spoken += characters.length
       }
       sentences.push({ text, generation })
     }
+  }
+
+  /** Ends a response: past the limit, says its last sentence after the cut notice. */
+  const finishResponse = (budget: Budget) => {
+    if (budget.tail !== undefined) sentences.push({ text: budget.tail, generation })
+    budget.tail = undefined
   }
 
   on("session.start", async ($, e, next) => {
@@ -428,7 +440,11 @@ export const register: Register = (on, options) => {
   on("turn.complete", async ($, e, next) => {
     if (e.reason === "aborted" && e.agentId === undefined) await stop()
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
-      if (config.mode === "final" && e.reason === "answer") enqueue(toSentences(e.answer, config.notices.code), { spoken: 0, isCut: false })
+      if (config.mode === "final" && e.reason === "answer") {
+        const budget: Budget = { spoken: 0, isCut: false }
+        enqueue(toSentences(e.answer, config.notices.code), budget)
+        finishResponse(budget)
+      }
       const notice = TURN_NOTICES[e.reason]
       if (config.mode === "notify" && notice !== undefined && config.notices[notice] !== "") enqueue([config.notices[notice]])
     }
@@ -482,6 +498,7 @@ export const register: Register = (on, options) => {
     } finally {
       // Runs even when the engine stops pulling after the last chunk: the line without a newline is said too.
       queueResponse(splitter.flush())
+      if (!isTurnMuted && responseGeneration === generation) finishResponse(budget)
     }
     return stream.result
   })

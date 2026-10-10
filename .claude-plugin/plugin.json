@@ -76,7 +76,7 @@
     "maxCharsPerTurn": {
       "type": "number",
       "title": "TTS: Max characters per response",
-      "description": "Maximum characters read from one model response, excluding the cut notice; text before a tool call and the answer after it count apart. 0 reads everything.",
+      "description": "Maximum characters read from one model response, excluding the cut notice and the response's last sentence, still said after it; text before a tool call and the answer after it count apart. 0 reads everything.",
       "default": 600
     },
     "interruptOnPrompt": {

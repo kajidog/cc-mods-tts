@@ -132,7 +132,7 @@ WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由�
 | TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
 | TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
 | TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
-| TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って止める。0 で無制限 | 600 |
+| TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って残りを飛ばし、応答の最後の1文だけ読む。0 で無制限 | 600 |
 | TTS: Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
 | TTS: Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
 | TTS: Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
@@ -154,7 +154,7 @@ WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由�
 通知の文はどれも空にするとその通知の読み上げをスキップできます（注：スキップしても既存の再生は止まります）。  
 質問やコマンドの通知を空にした場合は、質問文・コマンドの説明も読みません。
 
-Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限による入力エラーは出しませんが、範囲外の値は Irodori サーバーが拒否する場合があります。文字数の上限に、省略を知らせる通知文は含みません。
+Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限による入力エラーは出しませんが、範囲外の値は Irodori サーバーが拒否する場合があります。文字数の上限に、省略を知らせる通知文と、省略後に読む最後の1文は含みません。
 
 音声ファイルはセッション用の一時ディレクトリに保存し、再生後に削除します。macOS / Linux / WSL では所有者のみアクセスできる権限で作成し、Windows ネイティブではユーザーの一時フォルダ（`%TEMP%`）のアクセス権を引き継ぎます。通知キャッシュはセッション終了時・Mod の再読み込み時に削除します。プロセスの強制終了などで清掃が実行できなかった場合は、一時ディレクトリに残ることがあります。
 
