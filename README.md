@@ -175,6 +175,9 @@ Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限
 
 ## 開発
 
+<details>
+<summary>開発者向け: lint・テスト・リリースの手順</summary>
+
 ```sh
 npm install
 CLAUDE_CODE_PLUGIN_DIR_WATCH=1 claude --init-only --plugin-dir .  # .claude-plugin/types/ を生成（型チェックに必要）
@@ -207,6 +210,8 @@ npm run changeset
 最初に GitHub リポジトリの **Settings → Actions → General → Workflow permissions** で **Allow GitHub Actions to create and approve pull requests** を有効にしてください（[Changesets の設定手順](https://github.com/changesets/action/tree/v2#requirements)）。標準の `GITHUB_TOKEN` を使うため、追加のトークンは不要です。自動作成された PR の CI が承認待ちになった場合は、PR 画面の **Approve workflows to run** で実行を承認してください（[GitHub の仕様](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)）。
 
 手元でリリース差分を生成する場合は `npm run release:version`、バージョンの整合性確認は `npm run check:version` を使います。履歴の生成時はプラグイン側も同期するため、`changeset version` 単体では実行しません。バージョン管理用の `package.json` は `private: true` で、npm 公開や GitHub Release の作成は行いません。
+
+</details>
 
 ## ライセンス
 
