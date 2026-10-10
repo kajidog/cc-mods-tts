@@ -8,6 +8,7 @@ import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
 import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
+import { lastAnswer, replayBlocks, replayOptions } from "./replay"
 import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from "./platform"
 import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
 import { SpeechProcess } from "./process"
@@ -19,6 +20,8 @@ const HELP = [
   "/tts on | off          read replies aloud or not",
   "/tts stop              stop speech and mute the rest of this turn",
   "/tts test [text]       read a test sentence",
+  "/tts replay            read the last answer again, whole",
+  "/tts replay select     pick a recent block of the conversation and read it whole",
   "/tts mode [name]       stream | final | notify; no name opens a picker",
   "/tts engine [name]     switch engines; no name checks whether each one answers",
   "/tts voice [id]        pick a voice; no id opens a picker",
@@ -76,6 +79,8 @@ export const register: Register = (on, options) => {
   let noticeCount = 0
   // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
   let engineIssue: string | undefined
+  // The blocks `/tts replay select` last offered; a pick names one by its index.
+  let replayChoices: string[] = []
   // Set by session.start: probes the engine in use and shows the result.
   let recheckEngine = () => {}
 
@@ -140,6 +145,12 @@ export const register: Register = (on, options) => {
       }
       say(text)
     }
+  }
+
+  /** Reads `text` again from the start, whole: whatever is being read stops. */
+  const replay = async (text: string) => {
+    await stop()
+    enqueue(toSentences(text))
   }
 
   /** Ends a response: past the limit, says its last sentence after the cut notice. */
@@ -255,8 +266,8 @@ export const register: Register = (on, options) => {
 
     await $.command.register({
       name: "tts",
-      description: "Read replies aloud: on, off, stop, test, mode, engine, voice, speed, volume, pin, unpin, config, help",
-      argumentHint: "[on|off|stop|test [text]|mode|engine|voice|speed|volume [value]|pin|unpin|config|help]",
+      description: "Read replies aloud: on, off, stop, test, replay, mode, engine, voice, speed, volume, pin, unpin, config, help",
+      argumentHint: "[on|off|stop|test [text]|replay [select]|mode|engine|voice|speed|volume [value]|pin|unpin|config|help]",
       // `/tts stop` has to land while a reply is still being read.
       immediate: true,
     })
@@ -306,6 +317,27 @@ export const register: Register = (on, options) => {
         enqueue(texts)
         return { text: `testing ${config.engine} (the first Irodori request loads the model and can take a while)` }
       }
+      case "replay": {
+        const messages = await $.session.messages()
+        if (rest[0] !== "select") {
+          const answer = lastAnswer(messages)
+          if (answer === undefined) return { text: "no answer to replay yet" }
+          await replay(answer)
+          return { text: "replaying the last answer" }
+        }
+        replayChoices = replayBlocks(messages)
+        const picked = rest[1] === undefined ? undefined : replayChoices[Number(rest[1])]
+        if (picked !== undefined) {
+          await replay(picked)
+          return { text: `replaying block ${rest[1]}` }
+        }
+        const options = replayOptions(replayChoices)
+        if (options.length === 0) return { text: "nothing to replay yet" }
+        if (await openPicker($, { action: "replay", title: "replay (newest first)", options, value: options[0]!.value })) {
+          return { text: "pick a block in the pane (Esc closes it)" }
+        }
+        return { text: ["recent blocks, newest first (/tts replay select <n>):", ...options.map(optionLine)].join("\n") }
+      }
       case "voice": {
         const { voices } = engine
         if (voices === undefined) return { text: `engine=${config.engine} has no voices; set it up in /config` }
@@ -315,7 +347,7 @@ export const register: Register = (on, options) => {
           if (!listed.ok) return { text: `GET ${voices.url} failed with ${listed.status}` }
           const options = voices.parse(listed.text)
           const title = `${config.engine} voice`
-          if (await openPicker($, { setting: "voice", title, options, value: voices.current })) {
+          if (await openPicker($, { action: "voice", title, options, value: voices.current })) {
             return { text: "pick a voice in the pane (Esc closes it)" }
           }
           return { text: [`${config.engine} voices (/tts voice <id>):`, ...options.map(optionLine)].join("\n") }
@@ -326,7 +358,7 @@ export const register: Register = (on, options) => {
         const name = rest[0] as ReadMode | undefined
         if (name === undefined) {
           const options = MODES.map(mode => ({ value: mode, label: MODE_LABELS[mode] }))
-          if (await openPicker($, { setting: "mode", title: "read mode", options, value: config.mode })) {
+          if (await openPicker($, { action: "mode", title: "read mode", options, value: config.mode })) {
             return { text: "pick a mode in the pane (Esc closes it)" }
           }
           return { text: `mode: ${config.mode} (${MODES.join(" | ")})` }
@@ -339,7 +371,7 @@ export const register: Register = (on, options) => {
         if (value === undefined) {
           const current = String(action === "speed" ? options.speed : config.volume)
           const choices = (action === "speed" ? SPEEDS : VOLUMES).map(each => ({ value: each, label: `× ${each}` }))
-          if (await openPicker($, { setting: action, title: action, options: choices, value: current })) {
+          if (await openPicker($, { action: action, title: action, options: choices, value: current })) {
             return { text: `pick a ${action} in the pane (Esc closes it)` }
           }
           return { text: `${action}: ${current}` }
@@ -421,13 +453,19 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         <Select
-          key={`${shown.setting}-${page}`}
+          key={`${shown.action}-${page}`}
           options={choices.map(option => ({ value: option.value, label: option.label ?? option.value }))}
           value={choices.some(option => option.value === shown.value) ? shown.value : undefined}
           autoFocus
           onSelect={async value => {
             await $.ui.close({ id: PICKER_PANE })
-            $.ui.toast(`tts: ${await commit($, changeOf(shown.setting, value), applyPins)}`)
+            if (shown.action === "replay") {
+              const text = replayChoices[Number(value)]
+              if (text === undefined) $.ui.toast("tts: that block is gone; run /tts replay select again")
+              else await replay(text)
+              return
+            }
+            $.ui.toast(`tts: ${await commit($, changeOf(shown.action, value), applyPins)}`)
           }}
         />
       </Box>
@@ -597,7 +635,7 @@ async function engineRow($: EngineInterface, name: EngineName, engine: LoadedEng
 async function openPicker($: EngineInterface, shown: Picker): Promise<boolean> {
   await update($, picker, () => shown)
   const rows = Math.min(shown.options.length + 3, 14)
-  const opened = await $.ui.open({ id: PICKER_PANE, title: `tts ${shown.setting}`, focus: true, closeOnEscape: true, rows })
+  const opened = await $.ui.open({ id: PICKER_PANE, title: `tts ${shown.action}`, focus: true, closeOnEscape: true, rows })
   return opened.isPlaced
 }
 

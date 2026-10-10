@@ -81,9 +81,11 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | `/tts` | 状態表示（on/off・モード・エンジン・速度・音量） |
 | `/tts help` | コマンド一覧 |
 | `/tts config` | 設定の一覧と今の値 |
-| `/tts on` / `/tts off` | 有効・無効（`/config` の Enabled と同じ） |
+| `/tts on` / `/tts off` | 有効・無効（`/config` の TTS: Enabled と同じ） |
 | `/tts stop` | 合成・再生中の処理とキューを止め、そのターンの残りの返答も読まない。次のターンから再開 |
 | `/tts test [text]` | 通常の返答と同じ整形を通してテスト読み上げ |
+| `/tts replay` | 直前の最終回答を、文字数の上限なしで最初から読み直す |
+| `/tts replay select` | 最近の発言ブロック（ツール呼び出しやユーザーの発言で区切ったもの）を新しい順に一覧し、冒頭の文で選んで最初から読み直す |
 | `/tts mode [stream\|final\|notify]` | 読み上げモード切替。引数なしでモードを選ぶペインを開く |
 | `/tts engine [name]` | エンジン切替。引数なしで各エンジンが応答するか（ok / down / unset）を表示 |
 | `/tts voice [id]` | 引数なしで声を選ぶペインを開く（↑↓で移動、Enter で決定、Esc で閉じる）。id 指定で直接設定 |

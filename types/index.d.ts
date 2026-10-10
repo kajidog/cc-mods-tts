@@ -4,9 +4,12 @@ export type PickerOption = { value: string; label?: string }
 /** The settings a `/tts` command or the picker changes. */
 export type Setting = "mode" | "engine" | "voice" | "speed" | "volume"
 
-/** What the picker pane offers: the setting a pick saves, its choices, the one in use. */
+/** What a pick in the picker does: save a setting, or replay a block of the conversation. */
+export type PickerAction = Setting | "replay"
+
+/** What the picker pane offers: what a pick does, its choices, the one in use. */
 export type Picker = {
-  setting: Setting
+  action: PickerAction
   title: string
   options: PickerOption[]
   value: string
