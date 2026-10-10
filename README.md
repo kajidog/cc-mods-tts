@@ -176,12 +176,12 @@ Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限
 ## 開発
 
 ```sh
-npx -y @biomejs/biome@2.5.14 lint --error-on-warnings .
-claude plugin validate --strict .
-CLAUDE_CODE_PLUGIN_DIR_WATCH=1 claude --init-only --plugin-dir .
-npx -y -p typescript@5.8.3 tsc -p .
-claude plugin test .
+npm install
+CLAUDE_CODE_PLUGIN_DIR_WATCH=1 claude --init-only --plugin-dir .  # .claude-plugin/types/ を生成（型チェックに必要）
+npm run check  # lint・validate・型チェック・test をまとめて実行
 ```
+
+個別には `npm run lint` / `npm run validate` / `npm run typecheck` / `npm test` で実行できます。Biome と TypeScript は devDependencies で固定し、`claude` は PATH にあるものを使います。
 
 CI（`.github/workflows/ci.yml`）は main への push と PR で lint を実行し、Linux・Windows で validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
 
