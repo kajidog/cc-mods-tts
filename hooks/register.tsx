@@ -106,23 +106,24 @@ export const register: Register = (on, options) => {
     sentences.push({ text, generation, cacheAs: `${directory}/notice-${noticeCount++}.wav` })
   }
 
-  /** Queues sentences; with a budget, stops at the limit and says once that the rest is skipped. */
+  /**
+   * Queues sentences; with a budget, stops before the sentence that would pass the limit
+   * (never reading half of one) and says once that the rest is skipped.
+   */
   const enqueue = (texts: readonly string[], budget?: Budget) => {
     for (const text of texts) {
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
+        const length = Array.from(text).length
+        if (!budget.isCut && budget.spoken + length > config.maxCharsPerTurn) {
+          budget.isCut = true
+          if (config.notices.cut !== "") sentences.push({ text: config.notices.cut, generation })
+        }
+        // Each skipped sentence may be the last, so the one that passes the limit counts too.
         if (budget.isCut) {
           budget.tail = text
           continue
         }
-        const remaining = Math.max(0, Math.floor(config.maxCharsPerTurn - budget.spoken))
-        const characters = Array.from(text)
-        if (characters.length > remaining) {
-          if (remaining > 0) sentences.push({ text: characters.slice(0, remaining).join(""), generation })
-          budget.isCut = true
-          if (config.notices.cut !== "") sentences.push({ text: config.notices.cut, generation })
-          continue
-        }
-        budget.spoken += characters.length
+        budget.spoken += length
       }
       sentences.push({ text, generation })
     }

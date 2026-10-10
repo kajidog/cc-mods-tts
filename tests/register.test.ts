@@ -144,16 +144,17 @@ test("stop cancels an in-flight synthesis without falling back and frees the que
   expect(observed.processes.some(e => e.argv[0] === "curl")).toBe(false)
 })
 
-test("the response budget caps actual characters and adds one cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+test("the response budget stops before the sentence that passes it and adds one cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)
+  // Split into five sentences of 160 characters: three fit in 600, the fourth passes.
   await $.turn.complete(completed("あ".repeat(800)))
   await observed.idle()
   await settle()
   const spoken = observed.spoken()
   const cut = spoken.indexOf("途中を省略します。")
   expect(spoken.lastIndexOf("途中を省略します。")).toBe(cut)
-  expect(spoken.slice(0, cut).join("").length).toBe(600)
+  expect(spoken.slice(0, cut).map(sentence => sentence?.length)).toEqual([160, 160, 160])
 })
 
 test("past the budget, the response's last sentence is still said after the cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
@@ -163,6 +164,17 @@ test("past the budget, the response's last sentence is still said after the cut 
   await observed.idle()
   await settle()
   expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "進めますか？"])
+})
+
+test("the sentence that passes the budget is said whole when it is the last", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(595)}。このまま進めてもいいですか？`))
+  await observed.idle()
+  await settle()
+  const spoken = observed.spoken()
+  expect(spoken.slice(-2)).toEqual(["途中を省略します。", "このまま進めてもいいですか？"])
+  expect(spoken.filter(sentence => sentence?.includes("進め"))).toHaveLength(1)
 })
 
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
