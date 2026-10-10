@@ -1,5 +1,11 @@
 # cc-mods-tts
 
+## 0.3.2
+
+### Patch Changes
+
+- 7271ce1: Changesets による変更履歴の管理を導入し、CHANGELOG の生成とプラグインのバージョン更新をリリース用 PR にまとめるようにしました。
+
 ## 0.3.1
 
 ### Patch Changes
