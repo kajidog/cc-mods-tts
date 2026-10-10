@@ -1,4 +1,4 @@
-import type { On, ProcessSpawnRequest, TurnStepResult } from "claude-code"
+import type { On, ProcessSpawnRequest, SessionMessage, TurnStepResult } from "claude-code"
 import { expect, test } from "claude-code/testing"
 
 const options = { engine: "command", command: "synth {out}", player: "aplay" }
@@ -276,3 +276,33 @@ test("asks the model to write for speech while replies are read", { options: { .
 for (const [name, extra] of [["an empty prompt", { modelPrompt: "" }], ["notify mode", { mode: "notify" }], ["off", { enabled: false }]] as const) {
   test(`adds nothing to the system prompt with ${name}`, { options: { ...options, ...extra } }, expectSections(["intro:x"]))
 }
+
+test("replay reads the last answer whole, past the response budget", { options: { ...options, maxCharsPerTurn: 10 } }, async ($, on) => {
+  const observed = host(on)
+  on("session.messages", () => ({
+    value: [
+      { role: "user", text: "直して", toolUses: [] },
+      { role: "assistant", text: "直しました。テストも通っています。コミットしますか？", toolUses: [] },
+    ],
+  }))
+  await $.session.start(start)
+  const result = await $.command.run(command("replay"))
+  await observed.idle()
+  expect(result.text).toBe("replaying the last answer")
+  expect(observed.spoken()).toEqual(["直しました。", "テストも通っています。", "コミットしますか？"])
+})
+
+test("replay select reads the block it names", { options }, async ($, on) => {
+  const observed = host(on)
+  on("session.messages", () => ({
+    value: [
+      { role: "assistant", text: "調べます。", toolUses: [{}] },
+      { role: "user", text: "", toolUses: [], toolResults: [] },
+      { role: "assistant", text: "終わりました。", toolUses: [] },
+    ] as SessionMessage[],
+  }))
+  await $.session.start(start)
+  await $.command.run(command("replay select 0"))
+  await observed.idle()
+  expect(observed.spoken()).toEqual(["調べます。"])
+})
