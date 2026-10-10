@@ -9,7 +9,7 @@ const step = { turnId: "turn", index: 0, model: "test", messageCount: 1 }
 const stepResult: TurnStepResult = { turnId: "turn", index: 0, answer: "", toolUses: [], stopReason: "end_turn", usage: null }
 
 /** No commands or audio actually run; tests inspect the requests sent to the host. */
-function host(on: On, blockedInput?: string) {
+function host(on: On, blockedInput?: string, isWindows = false) {
   const commands: string[][] = []
   const processes: ProcessSpawnRequest[] = []
   let directories = 0
@@ -18,6 +18,7 @@ function host(on: On, blockedInput?: string) {
   const cancelled: string[] = []
   on("session.start", () => ({ cwd: "/review" }))
   on("session.cwd", () => ({ value: "/review" }))
+  on("env.get", () => ({ value: isWindows ? "Windows_NT" : undefined }))
   on("session.end", (_, e) => ({ sessionId: e.sessionId }))
   on("classic.SessionStart", () => ({}))
   on("store.get", () => ({ value: undefined }))
@@ -29,7 +30,11 @@ function host(on: On, blockedInput?: string) {
   on("turn.complete", (_, e) => ({ text: e.answer }))
   on("process.run", (_, e) => {
     commands.push([...e.argv])
-    return { value: { exitCode: 0, stdout: e.argv[0] === "mktemp" ? `/tmp/claude-tts-test${++directories}\n` : "", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
+    let stdout = ""
+    if (e.argv[0] === "mktemp") stdout = `/tmp/claude-tts-test${++directories}\n`
+    else if (e.argv.at(-1)?.includes("CreateDirectory")) stdout = `C:\\Users\\日本語 Test\\Temp\\claude-tts-test${++directories}\r\n`
+    else if (e.argv.at(-1)?.includes("Get-Command ffplay")) stdout = "powershell\r\n"
+    return { value: { exitCode: 0, stdout, stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on("clock.after", () => new Promise<{ value: undefined }>(() => {}))
   on("process.spawn", async function* (_, e, next) {
@@ -137,6 +142,28 @@ test("clear cleans the directory and allows speech in a fresh private directory"
   await observed.idle()
   await settle()
   expect(observed.processes[0]?.argv[1]).toBe("/tmp/claude-tts-test2/000000.wav")
+})
+
+test("Windows auto playback and cleanup stay native across a session clear", { options: { ...options, player: "auto" } }, async ($, on) => {
+  const observed = host(on, undefined, true)
+  await $.session.start(start)
+  await $.command.run(command("test 最初。"))
+  await observed.idle()
+  expect(observed.spoken()).toEqual(["最初。"])
+  expect(observed.processes[0]?.argv[1]).toBe("C:\\Users\\日本語 Test\\Temp\\claude-tts-test1/000000.wav")
+  expect(observed.processes.map(e => e.argv.at(-1))).toContainEqual(expect.stringContaining("Media.SoundPlayer"))
+  expect(observed.commands.map(argv => argv.at(-1))).toContainEqual(expect.stringContaining("Remove-Item -LiteralPath"))
+  expect(observed.commands).toContainEqual(["where.exe", "synth"])
+  await $.session.end({ reason: "clear", sessionId: "session", resume: { id: "session" } })
+  expect(observed.commands.map(argv => argv.at(-1))).toContainEqual(expect.stringContaining("-Recurse -Force"))
+  await $.classic.SessionStart({ source: "clear" })
+  await $.command.run(command("test 再開。"))
+  await observed.idle()
+  expect(observed.spoken()).toEqual(["最初。", "再開。"])
+  expect(observed.processes.map(e => e.argv[1])).toContain("C:\\Users\\日本語 Test\\Temp\\claude-tts-test2/000001.wav")
+  const argv = [...observed.commands, ...observed.processes.map(e => [...e.argv])]
+  expect(argv.some(args => ["sh", "rm", "mktemp"].includes(args[0] ?? ""))).toBe(false)
+  expect(argv.flat().join(" ")).not.toContain("wslpath")
 })
 
 /** A test body that composes the system prompt and checks its sections as `id:text`. */

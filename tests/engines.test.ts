@@ -41,4 +41,12 @@ describe("engines", () => {
     expect(voicevox?.parse(listed)).toEqual([{ value: "3", label: "ずんだもん ノーマル" }])
     expect(voicevox?.current).toBe("3")
   })
+
+  test("Windows probes use native commands and do not write to /dev/null", async () => {
+    expect(ENGINES.command.load(options({ command: "synth {out}" }), true).probe).toEqual(["where.exe", "synth"])
+    for (const name of ["voicevox", "irodori"] as const) {
+      const engine = ENGINES[name].load(options({ voicevoxUrl: "http://x", irodoriUrl: "http://x" }), true)
+      expect(engine.probe).not.toContain("/dev/null")
+    }
+  })
 })

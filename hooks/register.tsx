@@ -8,7 +8,8 @@ import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
 import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
-import { FIND_PLAYER, playCommand, trimCommand } from "./player"
+import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from "./platform"
+import { findPlayerCommand, playCommand, trimCommand } from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
 import { SpeechSplitter, toSentences } from "./speech-text"
@@ -45,6 +46,7 @@ type Sentence = { text: string; generation: number; cacheAs?: string }
 type Clip = { file: string; generation: number; isCached?: boolean }
 
 export const register: Register = (on, options) => {
+  let isWindows = false
   let config = toConfig(options)
   let engine = ENGINES[config.engine].load(options)
   let fallback = config.fallback === undefined ? undefined : ENGINES[config.fallback].load(options)
@@ -75,8 +77,8 @@ export const register: Register = (on, options) => {
     pins = stored
     const effective = pinnedOptions(options, pins[cwd])
     config = toConfig(effective)
-    engine = ENGINES[config.engine].load(effective)
-    fallback = config.fallback === undefined ? undefined : ENGINES[config.fallback].load(effective)
+    engine = ENGINES[config.engine].load(effective, isWindows)
+    fallback = config.fallback === undefined ? undefined : ENGINES[config.fallback].load(effective, isWindows)
     // Cached notices were spoken in the voice before.
     cachedNotices.clear()
     recheckEngine()
@@ -120,12 +122,13 @@ export const register: Register = (on, options) => {
 
   on("session.start", async ($, e, next) => {
     const started = await next(e)
+    isWindows = (await $.env.get("OS")) === "Windows_NT"
     cwd = await $.session.cwd()
     applyPins(toPins(await $.store.get(PINS_KEY)))
-    player = config.player === "auto" ? (await $.process.run(FIND_PLAYER)).stdout.trim() || undefined : config.player
+    player = config.player === "auto" ? (await $.process.run(findPlayerCommand(isWindows))).stdout.trim() || undefined : config.player
     if (player === undefined) $.ui.toast("tts: no audio player found (ffplay, paplay, aplay, afplay, powershell.exe)")
 
-    directory = await prepareDirectory($)
+    directory = await prepareDirectory($, isWindows)
     let clipCount = 0
     let lastErrorAt = 0
 
@@ -175,13 +178,13 @@ export const register: Register = (on, options) => {
             reportFallback(error)
           }
           if (!isCurrent()) {
-            await $.process.run(["rm", "-f", file])
+            await $.process.run(removeFilesCommand([file], isWindows))
             continue
           }
           // Done while the clip before plays; an untrimmed clip still plays.
-          await runProcess($, synthesisProcess, trimCommand(file), undefined, 30_000).catch(() => undefined)
+          await runProcess($, synthesisProcess, trimCommand(file, isWindows), undefined, 30_000).catch(() => undefined)
           if (!isCurrent()) {
-            await $.process.run(["rm", "-f", file, `${file}.t.wav`])
+            await $.process.run(removeFilesCommand([file, `${file}.t.wav`], isWindows))
             continue
           }
           // A notice the fallback read is kept for this time only: the engine may be back next time.
@@ -189,7 +192,7 @@ export const register: Register = (on, options) => {
           if (isCached) cachedNotices.set(sentence.text, file)
           clips.push({ file, generation: sentence.generation, isCached })
         } catch (error) {
-          await $.process.run(["rm", "-f", file])
+          await $.process.run(removeFilesCommand([file], isWindows))
           if (isCurrent()) reportError(error)
         }
       }
@@ -200,14 +203,14 @@ export const register: Register = (on, options) => {
         const clip = await clips.take()
         if (clip.generation === generation && player !== undefined) {
           try {
-            await playbackProcess.read($.process.spawn({ argv: playCommand(player, clip.file, config.volume) }))
+            await playbackProcess.read($.process.spawn({ argv: playCommand(player, clip.file, config.volume, isWindows) }))
           } catch (error) {
             if (clip.generation === generation) reportError(error)
           }
         }
         const files = [`${clip.file}.v.wav`]
         if (clip.isCached !== true) files.push(clip.file)
-        await $.process.run(["rm", "-f", ...files])
+        await $.process.run(removeFilesCommand(files, isWindows))
       }
     })()
 
@@ -235,7 +238,7 @@ export const register: Register = (on, options) => {
   on("session.end", async ($, e, next) => {
     await stop()
     cachedNotices.clear()
-    if (directory !== "") await $.process.run(["rm", "-rf", "--", directory])
+    if (directory !== "") await $.process.run(removeDirectoryCommand(directory, isWindows))
     directory = ""
     await update($, audioDirectory, () => null)
     return next(e)
@@ -244,7 +247,7 @@ export const register: Register = (on, options) => {
   // /clear, resume and /branch keep this module alive without another session.start, and reset
   // $.state, which holds the directory for the next reload to remove.
   on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
-    if (directory === "") directory = await prepareDirectory($)
+    if (directory === "") directory = await prepareDirectory($, isWindows)
     else await update($, audioDirectory, () => directory)
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -268,7 +271,7 @@ export const register: Register = (on, options) => {
         const texts = toSentences(text)
         if (texts.length === 0) return { text: "no text to read after formatting" }
         try {
-          engine.synthesis(text, "/dev/null")
+          engine.synthesis(text, "probe.wav")
         } catch (error) {
           if (fallback === undefined) return { text: error instanceof Error ? error.message : String(error) }
         }
@@ -336,7 +339,7 @@ export const register: Register = (on, options) => {
         const name = rest[0]
         if (name === undefined) {
           const names = Object.keys(ENGINES) as EngineName[]
-          const rows = await Promise.all(names.map(each => engineRow($, each, ENGINES[each].load(options), config)))
+          const rows = await Promise.all(names.map(each => engineRow($, each, ENGINES[each].load(options, isWindows), config)))
           return { text: ["engines (● answers, ○ down or unset; /tts engine <name> switches):", ...rows].join("\n") }
         }
         return { text: await commit($, changeOf("engine", name), applyPins) }
@@ -471,11 +474,11 @@ export const register: Register = (on, options) => {
   })
 }
 
-/** Creates an owner-only directory, removing the previous module's files after a reload. */
-async function prepareDirectory($: EngineInterface): Promise<string> {
+/** Creates a temporary directory, removing the previous module's files after a reload. */
+async function prepareDirectory($: EngineInterface, isWindows: boolean): Promise<string> {
   const previous = await read($, audioDirectory)
-  if (previous !== null) await $.process.run(["rm", "-rf", "--", previous])
-  const created = await $.process.run(["mktemp", "-d", "/tmp/claude-tts-XXXXXXXXXX"])
+  if (previous !== null) await $.process.run(removeDirectoryCommand(previous, isWindows))
+  const created = await $.process.run(tempDirectoryCommand(isWindows))
   if (created.exitCode !== 0 || created.stdout.trim() === "") throw new Error("tts: could not create a private audio directory")
   const directory = created.stdout.trim()
   await update($, audioDirectory, () => directory)
@@ -527,7 +530,7 @@ async function runProcess($: EngineInterface, process: SpeechProcess, argv: stri
 async function checkEngine($: EngineInterface, engine: LoadedEngine): Promise<"ok" | "down" | "unset"> {
   if (engine.probe === undefined) return "unset"
   try {
-    engine.synthesis("", "/dev/null")
+    engine.synthesis("", "probe.wav")
   } catch {
     return "unset"
   }
