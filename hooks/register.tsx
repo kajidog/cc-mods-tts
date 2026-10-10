@@ -270,7 +270,7 @@ export const register: Register = (on, options) => {
       }
       case "test": {
         const text = e.args.trim().replace(/^test(?:\s+|$)/, "") || "読み上げのテストです。"
-        const texts = toSentences(text)
+        const texts = toSentences(text, config.notices.code)
         if (texts.length === 0) return { text: "no text to read after formatting" }
         try {
           engine.synthesis(text, "probe.wav")
@@ -428,7 +428,7 @@ export const register: Register = (on, options) => {
   on("turn.complete", async ($, e, next) => {
     if (e.reason === "aborted" && e.agentId === undefined) await stop()
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
-      if (config.mode === "final" && e.reason === "answer") enqueue(toSentences(e.answer), { spoken: 0, isCut: false })
+      if (config.mode === "final" && e.reason === "answer") enqueue(toSentences(e.answer, config.notices.code), { spoken: 0, isCut: false })
       const notice = TURN_NOTICES[e.reason]
       if (config.mode === "notify" && notice !== undefined && config.notices[notice] !== "") enqueue([config.notices[notice]])
     }
@@ -464,7 +464,7 @@ export const register: Register = (on, options) => {
 
     // Each response has its own budget: text before a tool call does not use up the answer's.
     const budget: Budget = { spoken: 0, isCut: false }
-    const splitter = new SpeechSplitter()
+    const splitter = new SpeechSplitter(config.notices.code)
     const responseGeneration = generation
     const queueResponse = (texts: string[]) => {
       if (!isTurnMuted && responseGeneration === generation) enqueue(texts, budget)

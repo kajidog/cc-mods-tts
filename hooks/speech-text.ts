@@ -31,6 +31,9 @@ export class SpeechSplitter {
   private partial = ""
   private fence: string | undefined
 
+  /** `codeNotice` is said where a fenced code block is skipped; empty: nothing. */
+  constructor(private readonly codeNotice = "") {}
+
   push(text: string): string[] {
     this.partial += text
     const sentences: string[] = []
@@ -75,15 +78,15 @@ export class SpeechSplitter {
     }
     if (marker) {
       this.fence = marker[1]
-      return []
+      return this.codeNotice === "" ? [] : [this.codeNotice]
     }
     return splitSentences(toSpeakable(text))
   }
 }
 
 /** A whole Markdown text as speakable sentences. */
-export function toSentences(text: string): string[] {
-  const splitter = new SpeechSplitter()
+export function toSentences(text: string, codeNotice?: string): string[] {
+  const splitter = new SpeechSplitter(codeNotice)
   return [...splitter.push(text), ...splitter.flush()]
 }
 

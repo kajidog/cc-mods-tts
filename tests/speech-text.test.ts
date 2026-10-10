@@ -20,6 +20,12 @@ describe("SpeechSplitter", () => {
     expect([...released.flat(), ...rest]).toEqual(["見てください。", "終わり。"])
   })
 
+  test("says the code notice once where fenced code is skipped", async () => {
+    const splitter = new SpeechSplitter("コードは省略します。")
+    const released = ["見てください。\n```ts\nconst a = 1。\n", "```\n終わり。"].map(piece => splitter.push(piece))
+    expect([...released.flat(), ...splitter.flush()]).toEqual(["見てください。", "コードは省略します。", "終わり。"])
+  })
+
   test("skips tables and keeps list text", async () => {
     const { released, rest } = feed(["| a | b |\n|---|---|\n- **太字**の項目\n"])
     expect([...released.flat(), ...rest]).toEqual(["太字の項目"])

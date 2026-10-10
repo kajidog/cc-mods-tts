@@ -160,7 +160,7 @@ test("test speech formats lists, brackets and paths while preserving newlines", 
   await $.session.start(start)
   await $.command.run(command("test — 項目（任意）です。\n1) /home/me/日本語/main.ts:10 を確認。\n```sh\nnpm test\n```"))
   await observed.idle()
-  expect(observed.spoken()).toEqual(["項目 任意 です。", "main.tsの10行目 を確認。"])
+  expect(observed.spoken()).toEqual(["項目 任意 です。", "main.tsの10行目 を確認。", "コードは省略します。"])
 })
 
 test("test speech reports when formatting leaves nothing to read", { options }, async ($, on) => {
