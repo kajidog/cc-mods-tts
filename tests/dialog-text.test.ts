@@ -35,3 +35,9 @@ test("reads a Bash call's description, not its command", async () => {
 test("says only the notice for other tools", async () => {
   expect(dialogSpeech("Write", { file_path: "/a", content: "x" })).toEqual({ notice: "ツールの許可をお願いします。", detail: [] })
 })
+
+test("empty notices also silence the question and command description", async () => {
+  const muted = { ...notices, question: "", command: "" }
+  expect(speechWith("AskUserQuestion", { questions: [{ question: "聞こえますか？" }] }, muted)).toEqual({ notice: "", detail: [] })
+  expect(speechWith("Bash", { description: "説明です。" }, muted)).toEqual({ notice: "", detail: [] })
+})

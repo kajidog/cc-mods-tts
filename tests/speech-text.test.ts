@@ -30,6 +30,35 @@ describe("SpeechSplitter", () => {
     expect(released).toEqual([["version 1.5 is out."]])
     expect(rest).toEqual(["Done"])
   })
+
+  test("keeps URL query parameters private across every chunk boundary", async () => {
+    const text = "参照 https://example.com/path?token=SECRET&x=1!end\n完了。"
+    for (let at = 1; at < text.length; at++) {
+      const { released, rest } = feed([text.slice(0, at), text.slice(at)])
+      expect([...released.flat(), ...rest]).toEqual(["参照 URL", "完了。"])
+    }
+  })
+
+  test("waits for a complete Markdown link before reading its label", async () => {
+    const { released, rest } = feed(["[こちら！", "](https://x.test/?token=SECRET)\n"])
+    expect([...released.flat(), ...rest]).toEqual(["こちら！"])
+  })
+
+  test("only closes a fence with the same marker and enough characters", async () => {
+    for (const marker of ["`", "~"]) {
+      const code = `${marker.repeat(4)}md\n${marker.repeat(3)}js\nconst secret = 42;\n${marker.repeat(3)}\n${marker.repeat(4)}\n完了。`
+      const { released, rest } = feed(Array.from(code))
+      expect([...released.flat(), ...rest]).toEqual(["完了。"])
+    }
+    expect(toSentences("```js\n~~~\nsecret\n```\n完了。")).toEqual(["完了。"])
+  })
+
+  test("keeps surrogate pairs together when splitting long sentences", async () => {
+    const text = "あ".repeat(159) + "😀続き。"
+    const sentences = toSentences(text)
+    expect(sentences.join("")).toBe(text)
+    for (const sentence of sentences) expect(() => encodeURIComponent(sentence)).not.toThrow()
+  })
 })
 
 test("toSpeakable reads link text and hides URLs", async () => {

@@ -12,6 +12,8 @@ declare module "claude-code" {
     tts: {
       /** The picker a `/tts` command without a value opened last; null before any. */
       picker: Picker | null
+      /** Private audio directory owned by the current module, cleaned on reload or exit. */
+      audioDirectory: string | null
     }
   }
 }

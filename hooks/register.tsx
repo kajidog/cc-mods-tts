@@ -8,6 +8,7 @@ import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { FIND_PLAYER, playCommand, trimCommand } from "./player"
+import { SpeechProcess } from "./process"
 import { SpeechSplitter, toSentences } from "./speech-text"
 
 const MODES: readonly ReadMode[] = ["stream", "final", "notify"]
@@ -21,12 +22,12 @@ const VOLUMES = ["0.5", "0.75", "1", "1.25", "1.5"]
 const HELP = [
   "/tts                   state: on/off, mode, engine, speed, volume",
   "/tts on | off          read replies aloud or not",
-  "/tts stop              drop what is playing and queued",
+  "/tts stop              stop speech and mute the rest of this turn",
   "/tts test [text]       read a test sentence",
   "/tts mode [name]       stream | final | notify; no name opens a picker",
   "/tts engine [name]     switch engines; no name checks whether each one answers",
   "/tts voice [id]        pick a voice; no id opens a picker",
-  "/tts speed [n]         speech speed (1: as is); no value opens a picker",
+  "/tts speed [n]         speech speed (1: as is, Irodori: 0.25–4); no value opens a picker",
   "/tts volume [n]        playback volume (1: as is); no value opens a picker",
   "/tts pin | unpin       keep this directory's engine and voice apart from the rest, or stop",
   "/tts config            every setting and its value; change them in /config → tts",
@@ -36,6 +37,8 @@ const HELP = [
 const TURN_NOTICES: Partial<Record<string, keyof Notices>> = { answer: "done", error: "error", refusal: "refusal" }
 const PICKER_PANE = "tts-picker"
 const picker = atom({ plugin: "tts", key: "picker" } as const, null as Picker | null)
+// Survives a reload so the next module can remove the old module's audio files.
+const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, null as string | null)
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
@@ -84,15 +87,17 @@ export const register: Register = (on, options) => {
 
   // `generation` moves on at every stop: queued work of an older one is dropped.
   let generation = 0
+  let isTurnMuted = false
   const { isEnabled } = config
   let isSynthesizing = false
   let player: string | undefined
-  let playingPid: string | undefined
+  const synthesisProcess = new SpeechProcess()
+  const playbackProcess = new SpeechProcess()
   const sentences = new Channel<Sentence>()
   const clips = new Channel<Clip>()
   // Notices are few and fixed: each is synthesized once per load, then replayed at once.
   const cachedNotices = new Map<string, string>()
-  let directory = "/tmp"
+  let directory = ""
   let noticeCount = 0
 
   /** Rebuilds the engines from the options with this directory's pin laid over them. */
@@ -145,10 +150,10 @@ export const register: Register = (on, options) => {
     }
   }
 
-  /** Drops queued speech; answers the pid of the player to kill, if one plays. */
-  const stop = (): string | undefined => {
+  /** Invalidates queued speech and closes the active synthesis and playback streams. */
+  const stop = async () => {
     generation += 1
-    return playingPid
+    await Promise.all([synthesisProcess.stop(), playbackProcess.stop()])
   }
 
   /** Queues `text` to be said next; called right after a stop, it plays first. */
@@ -164,12 +169,15 @@ export const register: Register = (on, options) => {
     for (const text of texts) {
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
         if (budget.isCut) return
-        if (budget.spoken >= config.maxCharsPerTurn) {
+        const remaining = Math.max(0, Math.floor(config.maxCharsPerTurn - budget.spoken))
+        const characters = Array.from(text)
+        if (characters.length > remaining) {
+          if (remaining > 0) sentences.push({ text: characters.slice(0, remaining).join(""), generation })
           budget.isCut = true
           if (config.notices.cut !== "") sentences.push({ text: config.notices.cut, generation })
           return
         }
-        budget.spoken += text.length
+        budget.spoken += characters.length
       }
       sentences.push({ text, generation })
     }
@@ -182,14 +190,13 @@ export const register: Register = (on, options) => {
     player = config.player === "auto" ? (await $.process.run(FIND_PLAYER)).stdout.trim() || undefined : config.player
     if (player === undefined) $.ui.toast("tts: no audio player found (ffplay, paplay, aplay, afplay, powershell.exe)")
 
-    directory = `/tmp/claude-tts-${await $.session.id()}`
-    await $.process.run(["mkdir", "-p", directory])
+    directory = await prepareDirectory($)
     let clipCount = 0
     let lastErrorAt = 0
 
     // Either loop may finish the last item, a dropped one included.
     const clearStatusWhenIdle = () => {
-      if (!isSynthesizing && sentences.size === 0 && clips.size === 0) $.ui.status(undefined)
+      if (!isSynthesizing && !playbackProcess.isRunning && sentences.size === 0 && clips.size === 0) $.ui.status(undefined)
     }
     // A reload kills the player mid-clip, leaving the last module's status behind.
     $.ui.status(undefined)
@@ -219,26 +226,35 @@ export const register: Register = (on, options) => {
           continue
         }
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
+        const isCurrent = () => sentence.generation === generation
         isSynthesizing = true
         try {
           try {
-            await synthesize($, engine, sentence.text, file)
+            await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
           } catch (error) {
-            if (fallback === undefined) throw error
-            await synthesize($, fallback, sentence.text, file)
+            if (!isCurrent() || fallback === undefined) throw error
+            await synthesize($, synthesisProcess, fallback, sentence.text, file, isCurrent)
             reportFallback(error)
           }
+          if (!isCurrent()) {
+            await $.process.run(["rm", "-f", file])
+            continue
+          }
           // Done while the clip before plays; an untrimmed clip still plays.
-          await $.process.run(trimCommand(file)).catch(() => undefined)
+          await runProcess($, synthesisProcess, trimCommand(file), undefined, 30_000).catch(() => undefined)
+          if (!isCurrent()) {
+            await $.process.run(["rm", "-f", file, `${file}.t.wav`])
+            continue
+          }
           if (sentence.cacheAs !== undefined) cachedNotices.set(sentence.text, file)
           clips.push({ file, generation: sentence.generation, isCached: sentence.cacheAs !== undefined })
         } catch (error) {
           await $.process.run(["rm", "-f", file])
-          if (sentence.generation === generation) reportError(error)
+          if (isCurrent()) reportError(error)
         } finally {
           isSynthesizing = false
+          clearStatusWhenIdle()
         }
-        clearStatusWhenIdle()
       }
     })()
 
@@ -248,16 +264,14 @@ export const register: Register = (on, options) => {
         if (clip.generation === generation && player !== undefined) {
           $.ui.status(`🔊 ${config.engine}`)
           try {
-            for await (const piece of $.process.spawn({ argv: playCommand(player, clip.file, config.volume) })) {
-              if (piece.stream === "stdout" && playingPid === undefined) playingPid = piece.text.split("\n")[0]?.trim()
-            }
+            await playbackProcess.read($.process.spawn({ argv: playCommand(player, clip.file, config.volume) }))
           } catch (error) {
-            reportError(error)
-          } finally {
-            playingPid = undefined
+            if (clip.generation === generation) reportError(error)
           }
         }
-        if (clip.isCached !== true) await $.process.run(["rm", "-f", clip.file])
+        const files = [`${clip.file}.v.wav`]
+        if (clip.isCached !== true) files.push(clip.file)
+        await $.process.run(["rm", "-f", ...files])
         clearStatusWhenIdle()
       }
     })()
@@ -270,17 +284,28 @@ export const register: Register = (on, options) => {
     return started
   })
 
+  on("session.end", async ($, e, next) => {
+    await stop()
+    cachedNotices.clear()
+    if (directory !== "") await $.process.run(["rm", "-rf", "--", directory])
+    await update($, audioDirectory, () => null)
+    // /clear and resume keep this module alive without another session.start.
+    if (e.reason === "clear" || e.reason === "resume") directory = await prepareDirectory($)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on("command.run", { command: "tts" }, async ($, e) => {
     const [action = "", ...rest] = e.args.trim().split(/\s+/)
     switch (action) {
       case "on":
       case "off": {
-        if (action === "off") await killPlayer($, stop())
+        if (action === "off") await stop()
         const set = await $.config.set({ key: "tts.enabled", value: action === "on" })
         return { text: "deny" in set && set.deny ? set.deny : action }
       }
       case "stop": {
-        await killPlayer($, stop())
+        isTurnMuted = true
+        await stop()
         return { text: "stopped" }
       }
       case "test": {
@@ -411,13 +436,18 @@ export const register: Register = (on, options) => {
   })
 
   on("prompt.submit", async ($, e, next) => {
-    if (config.interruptOnPrompt) await killPlayer($, stop())
+    if (config.interruptOnPrompt) await stop()
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  on("turn.start", async ($, e, next) => {
+    isTurnMuted = false
+    return next(e)
+  })
+
   on("turn.complete", async ($, e, next) => {
-    if (e.reason === "aborted") await killPlayer($, stop())
-    if (isEnabled && e.agentId === undefined) {
+    if (e.reason === "aborted" && e.agentId === undefined) await stop()
+    if (isEnabled && !isTurnMuted && e.agentId === undefined) {
       if (config.mode === "final" && e.reason === "answer") enqueue(toSentences(e.answer), { spoken: 0, isCut: false })
       const notice = TURN_NOTICES[e.reason]
       if (config.mode === "notify" && notice !== undefined && config.notices[notice] !== "") enqueue([config.notices[notice]])
@@ -428,7 +458,7 @@ export const register: Register = (on, options) => {
   // Whatever the mode, a dialog waiting for the person cuts off the reading and is announced.
   on("tool.call", async ($, e, next) => {
     if (isEnabled && DIALOG_TOOLS.has(e.tool)) {
-      await killPlayer($, stop())
+      await stop()
       const { notice, detail } = dialogSpeech(e.tool, e, config.notices)
       queueNotice(notice)
       enqueue(detail)
@@ -439,7 +469,7 @@ export const register: Register = (on, options) => {
   // Raised as a permission dialog is about to be shown, not for a call a rule or the mode settles.
   on("classic.PermissionRequest", async ($, e, next) => {
     if (isEnabled && !DIALOG_TOOLS.has(e.tool_name)) {
-      await killPlayer($, stop())
+      await stop()
       const { notice, detail } = dialogSpeech(e.tool_name, e.tool_input, config.notices)
       queueNotice(notice)
       enqueue(detail)
@@ -455,39 +485,74 @@ export const register: Register = (on, options) => {
     // Each response has its own budget: text before a tool call does not use up the answer's.
     const budget: Budget = { spoken: 0, isCut: false }
     const splitter = new SpeechSplitter()
+    const responseGeneration = generation
+    const queueResponse = (texts: string[]) => {
+      if (!isTurnMuted && responseGeneration === generation) enqueue(texts, budget)
+    }
     let block: number | undefined
     try {
       for await (const chunk of stream) {
         if (chunk.kind === "text") {
-          if (block !== undefined && block !== chunk.index) enqueue(splitter.flush(), budget)
+          if (block !== undefined && block !== chunk.index) queueResponse(splitter.flush())
           block = chunk.index
-          enqueue(splitter.push(chunk.text), budget)
+          queueResponse(splitter.push(chunk.text))
         }
         yield chunk
       }
     } finally {
       // Runs even when the engine stops pulling after the last chunk: the line without a newline is said too.
-      enqueue(splitter.flush(), budget)
+      queueResponse(splitter.flush())
     }
     return stream.result
   })
 }
 
-/** Ends the playback `stop` answered the pid of, if one was playing. */
-async function killPlayer($: EngineInterface, pid: string | undefined) {
-  if (pid !== undefined) await $.process.run(["kill", pid])
-}
-
 /** Runs an engine's commands for one sentence; throws on the first that fails. */
-async function synthesize($: EngineInterface, engine: LoadedEngine, text: string, file: string) {
+async function synthesize(
+  $: EngineInterface,
+  process: SpeechProcess,
+  engine: LoadedEngine,
+  text: string,
+  file: string,
+  isCurrent: () => boolean,
+) {
   let stdout = ""
   for (const step of engine.synthesis(text, file)) {
+    if (!isCurrent()) return
     const stdin = typeof step.stdin === "function" ? step.stdin(stdout) : step.stdin
-    const ran = await $.process.run(step.argv, { stdin, timeoutMs: SYNTH_TIMEOUT_MS })
-    if (ran.exitCode !== 0) {
-      throw new Error(`${step.argv[0]} exited ${ran.exitCode}: ${(ran.stderr || ran.stdout).trim().slice(0, 200)}`)
+    const ran = await runProcess($, process, step.argv, stdin, SYNTH_TIMEOUT_MS)
+    if (ran.code !== 0) {
+      throw new Error(`${step.argv[0]} exited ${ran.code}: ${(ran.stderr || ran.stdout).trim().slice(0, 200)}`)
     }
     stdout = ran.stdout
+  }
+}
+
+/** Creates an owner-only directory, removing the previous module's files after a reload. */
+async function prepareDirectory($: EngineInterface): Promise<string> {
+  const previous = await read($, audioDirectory)
+  if (previous !== null) await $.process.run(["rm", "-rf", "--", previous])
+  const created = await $.process.run(["mktemp", "-d", "/tmp/claude-tts-XXXXXXXXXX"])
+  if (created.exitCode !== 0 || created.stdout.trim() === "") throw new Error("tts: could not create a private audio directory")
+  const directory = created.stdout.trim()
+  await update($, audioDirectory, () => directory)
+  return directory
+}
+
+/** A cancellable command with the same time limit synthesis had under process.run. */
+async function runProcess($: EngineInterface, process: SpeechProcess, argv: string[], input: string | undefined, timeoutMs: number) {
+  const running = process.read($.process.spawn({ argv, input }))
+  let timedOut = false
+  const timer = $.clock.after(timeoutMs, () => {
+    timedOut = true
+    void process.stop()
+  })
+  try {
+    const result = await running
+    if (timedOut) throw new Error(`${argv[0]} timed out`)
+    return result
+  } finally {
+    timer.cancel()
   }
 }
 

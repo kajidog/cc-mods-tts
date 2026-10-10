@@ -10,7 +10,7 @@ const MAX_SENTENCE = 160
  */
 export class SpeechSplitter {
   private partial = ""
-  private isInFence = false
+  private fence: string | undefined
 
   push(text: string): string[] {
     this.partial += text
@@ -23,9 +23,11 @@ export class SpeechSplitter {
       newline = this.partial.indexOf("\n")
     }
 
-    // A line that may open a fence or a table waits for its newline.
-    if (!this.isInFence && !/^\s*[`|]/.test(this.partial)) {
-      const cut = lastTerminatorEnd(this.partial)
+    // Keep unfinished links and URLs whole: punctuation inside them is not a sentence end.
+    // Lines that may open a fence or a table also wait for their newline.
+    if (this.fence === undefined && !/^\s*[`~|]/.test(this.partial)) {
+      const markup = this.partial.search(/https?:\/\/|!?\[/)
+      const cut = lastTerminatorEnd(markup < 0 ? this.partial : this.partial.slice(0, markup))
       if (cut > 0) {
         sentences.push(...this.line(this.partial.slice(0, cut)))
         this.partial = this.partial.slice(cut)
@@ -37,16 +39,22 @@ export class SpeechSplitter {
   flush(): string[] {
     const sentences = this.line(this.partial)
     this.partial = ""
-    this.isInFence = false
+    this.fence = undefined
     return sentences
   }
 
   private line(text: string): string[] {
-    if (/^\s*(```|~~~)/.test(text)) {
-      this.isInFence = !this.isInFence
+    const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(text)
+    if (this.fence !== undefined) {
+      if (marker && marker[1]!.startsWith(this.fence) && marker[2]!.trim() === "") {
+        this.fence = undefined
+      }
       return []
     }
-    if (this.isInFence) return []
+    if (marker) {
+      this.fence = marker[1]
+      return []
+    }
     return splitSentences(toSpeakable(text))
   }
 }
@@ -91,14 +99,14 @@ function splitSentences(text: string): string[] {
 /** Engines choke on very long input: split at a comma near the limit, else hard. */
 function capLength(sentence: string): string[] {
   const pieces: string[] = []
-  let rest = sentence
+  let rest = Array.from(sentence)
   while (rest.length > MAX_SENTENCE) {
-    const comma = Math.max(rest.lastIndexOf("、", MAX_SENTENCE), rest.lastIndexOf(", ", MAX_SENTENCE))
+    const comma = Math.max(rest.lastIndexOf("、", MAX_SENTENCE - 1), rest.lastIndexOf(",", MAX_SENTENCE - 1))
     const cut = comma > MAX_SENTENCE / 2 ? comma + 1 : MAX_SENTENCE
-    pieces.push(rest.slice(0, cut))
+    pieces.push(rest.slice(0, cut).join(""))
     rest = rest.slice(cut)
   }
-  pieces.push(rest)
+  pieces.push(rest.join(""))
   return pieces
 }
 

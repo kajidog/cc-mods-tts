@@ -1,7 +1,7 @@
 {
   "name": "tts",
   "version": "0.1.0",
-  "description": "Reads Claude's replies aloud as they stream, sentence by sentence, through Irodori-TTS, VOICEVOX or any command.",
+  "description": "Reads Claude's replies aloud as they stream, sentence by sentence, through VOICEVOX, Irodori-TTS or any command.",
   "author": {
     "name": "kajidog"
   },
@@ -27,11 +27,11 @@
     "engine": {
       "type": "string",
       "title": "TTS engine",
-      "description": "irodori: Irodori-TTS (/v1/audio/speech). voicevox: VOICEVOX or a compatible engine (AivisSpeech, COEIROINK v1). command: the command below.",
-      "default": "irodori",
+      "description": "voicevox: VOICEVOX or a compatible engine (AivisSpeech, COEIROINK v1). irodori: Irodori-TTS (/v1/audio/speech). command: the command below.",
+      "default": "voicevox",
       "options": [
-        "irodori",
         "voicevox",
+        "irodori",
         "command"
       ]
     },
@@ -42,15 +42,15 @@
       "default": "none",
       "options": [
         "none",
-        "irodori",
         "voicevox",
+        "irodori",
         "command"
       ]
     },
     "speed": {
       "type": "number",
       "title": "Speed",
-      "description": "Speech speed multiplier, applied by the engine (Irodori 0.25–4, VOICEVOX speedScale); engine=command ignores it.",
+      "description": "Speech speed multiplier (Irodori: 0.25–4, VOICEVOX: speedScale). The mod does not enforce Irodori's lower limit; its server may reject values outside that range. engine=command ignores it.",
       "default": 1
     },
     "volume": {
@@ -76,7 +76,7 @@
     "maxCharsPerTurn": {
       "type": "number",
       "title": "Max characters per response",
-      "description": "Stops reading one model response past this many characters and says it skipped the rest; text before a tool call and the answer after it count apart. 0 reads everything.",
+      "description": "Maximum characters read from one model response, excluding the cut notice; text before a tool call and the answer after it count apart. 0 reads everything.",
       "default": 600
     },
     "interruptOnPrompt": {
@@ -136,7 +136,7 @@
     "noticeQuestion": {
       "type": "string",
       "title": "Notice: question",
-      "description": "Said as a question opens, before the question itself. Empty: say nothing.",
+      "description": "Said as a question opens, before the question itself. Empty: silence both the notice and the question.",
       "default": "質問があります。"
     },
     "noticeQuestions": {
@@ -154,7 +154,7 @@
     "noticeCommand": {
       "type": "string",
       "title": "Notice: command",
-      "description": "Said as a Bash permission dialog opens, before the command's description. Empty: say nothing.",
+      "description": "Said as a Bash permission dialog opens, before the command's description. Empty: silence both the notice and the description.",
       "default": "コマンドの確認をお願いします。"
     },
     "noticeTool": {
