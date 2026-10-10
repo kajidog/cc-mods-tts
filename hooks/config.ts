@@ -42,6 +42,8 @@ export type TtsConfig = {
   volume: number
   maxCharsPerTurn: number
   interruptOnPrompt: boolean
+  /** Added to the system prompt while replies are read; empty: nothing. */
+  modelPrompt: string
   notices: Notices
 }
 
@@ -57,6 +59,7 @@ export function toConfig(options: PluginOptions): TtsConfig {
     volume: Number(options.volume),
     maxCharsPerTurn: Number(options.maxCharsPerTurn),
     interruptOnPrompt: options.interruptOnPrompt === true,
+    modelPrompt: String(options.modelPrompt ?? "").trim(),
     notices: Object.fromEntries(
       Object.entries(NOTICE_OPTIONS).map(([notice, option]) => [notice, String(options[option] ?? "").trim()]),
     ) as Notices,

@@ -2,6 +2,15 @@
 const TERMINATOR = /[。！？!?]+[」』）)"]*|\.(?=\s)/g
 const SPEAKABLE = /[\p{L}\p{N}]/u
 const MAX_SENTENCE = 160
+const LIST_MARKER = /^\s*(?:[-*+–—•]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/
+/**
+ * A file path, optionally in backticks and with a line (`:12`, `:12:5`,
+ * `:12-20`, `#L12-L20`). Folders need a separator and the name an extension
+ * that starts with a letter, so `and/or`, `1/2` and `v1.2/v1.3` never match.
+ * The first directory has no spaces, so prose before a path is not consumed.
+ */
+const PATH =
+  /(?<![\p{L}\p{N}\p{M}_.:/\\~-])(`?)(~|[A-Za-z]:)?([\p{L}\p{N}\p{M}_.@+-]*[/\\](?:[\p{L}\p{N}\p{M}_.@+ -]*[/\\])*)([\p{L}\p{N}\p{M}_@+-][\p{L}\p{N}\p{M}_.@+-]*\.[A-Za-z][A-Za-z0-9]{0,9})(?:(?::|#L)(\d+)(?:-L?(\d+))?(?::\d+)?)?(`?)(?![\p{L}\p{N}\p{M}_/\\])/gu
 
 /**
  * Turns streamed Markdown into speakable sentences as early as possible:
@@ -27,10 +36,13 @@ export class SpeechSplitter {
     // Lines that may open a fence or a table also wait for their newline.
     if (this.fence === undefined && !/^\s*[`~|]/.test(this.partial)) {
       const markup = this.partial.search(/https?:\/\/|!?\[/)
-      const cut = lastTerminatorEnd(markup < 0 ? this.partial : this.partial.slice(0, markup))
+      // The period in "1. " belongs to the list marker, not a spoken sentence.
+      const start = LIST_MARKER.exec(this.partial)?.[0].length ?? 0
+      const end = markup < 0 ? this.partial.length : Math.max(start, markup)
+      const cut = lastTerminatorEnd(this.partial.slice(start, end))
       if (cut > 0) {
-        sentences.push(...this.line(this.partial.slice(0, cut)))
-        this.partial = this.partial.slice(cut)
+        sentences.push(...this.line(this.partial.slice(0, start + cut)))
+        this.partial = this.partial.slice(start + cut)
       }
     }
     return sentences
@@ -72,13 +84,28 @@ export function toSpeakable(line: string): string {
   return text
     .replace(/^#{1,6}\s+/, "")
     .replace(/^>\s?/, "")
-    .replace(/^([-*+]|\d+\.)\s+(\[[ xX]\]\s+)?/, "")
+    .replace(LIST_MARKER, "")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, "URL")
+    .replace(PATH, speakPath)
     .replace(/`([^`]*)`/g, "$1")
     .replace(/\*\*|~~|(?<!\w)\*(?!\s)|(?<!\s)\*(?!\w)/g, "")
+    .replace(/[()[\]{}（）［］｛｝「」『』【】〈〉《》]/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
+}
+
+/**
+ * Reads a path as its file name and line: "speech-text.tsの12行目". Only
+ * paths that are clearly paths are shortened: rooted (`/`, `~/`, `./`, `C:\\`),
+ * with a line, or a whole inline code span. A bare `React/Next.js` stays.
+ */
+function speakPath(match: string, open: string, root: string | undefined, dirs: string, name: string, line?: string, end?: string, close?: string): string {
+  const code = open !== "" && close !== ""
+  if (!(code || line !== undefined || root !== undefined || /^\.{0,2}[/\\]/.test(dirs))) return match
+  const spoken = line === undefined ? name : end === undefined ? `${name}の${line}行目` : `${name}の${line}から${end}行目`
+  return code ? spoken : `${open}${spoken}${close}`
 }
 
 function splitSentences(text: string): string[] {
