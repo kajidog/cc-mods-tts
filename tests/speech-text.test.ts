@@ -54,7 +54,7 @@ describe("SpeechSplitter", () => {
   })
 
   test("keeps surrogate pairs together when splitting long sentences", async () => {
-    const text = "あ".repeat(159) + "😀続き。"
+    const text = `${"あ".repeat(159)}😀続き。`
     const sentences = toSentences(text)
     expect(sentences.join("")).toBe(text)
     for (const sentence of sentences) expect(() => encodeURIComponent(sentence)).not.toThrow()

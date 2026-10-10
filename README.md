@@ -154,9 +154,17 @@ Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限
 ## 開発
 
 ```sh
-claude plugin validate .
+npx -y @biomejs/biome@2.5.14 lint --error-on-warnings .
+claude plugin validate --strict .
+CLAUDE_CODE_PLUGIN_DIR_WATCH=1 claude --init-only --plugin-dir .
+npx -y -p typescript@5.8.3 tsc -p .
 claude plugin test .
-tsc -p .   # 一度読み込まれて .claude-plugin/types/ が生成された後
 ```
 
-API は early access のため、Claude Code の更新で変わることがある（作成時: 2.1.289）。
+CI（`.github/workflows/ci.yml`）は main への push と PR で lint・validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
+
+API は early access のため、Claude Code の更新で変わることがある（CI で確認しているバージョン: 2.1.296）。
+
+## ライセンス
+
+[MIT License](LICENSE)

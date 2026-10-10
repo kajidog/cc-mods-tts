@@ -2,6 +2,7 @@
 export const FIND_PLAYER = [
   "sh",
   "-c",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion
   "for p in ffplay paplay aplay afplay powershell.exe; do command -v $p >/dev/null && { echo ${p%.exe}; exit; }; done",
 ]
 
