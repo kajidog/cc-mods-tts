@@ -12,7 +12,7 @@ import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from
 import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
-import { SpeechSplitter, toSentences } from "./speech-text"
+import { capLength, SKIPPED_CODE, type Spoken, SpeechSplitter, toSentences } from "./speech-text"
 
 const HELP = [
   "/tts                   state: on/off, mode, engine, speed, volume",
@@ -39,9 +39,14 @@ const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, n
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
+/** A last sentence longer than this is not said after the cut: a long line without a stop is no question. */
+const MAX_TAIL = 300
 
-/** How much of one model response has been queued; past the limit the rest is dropped. */
-type Budget = { spoken: number; isCut: boolean }
+/**
+ * How much of one model response has been queued; past the limit the rest is dropped,
+ * save its last sentence (`tail`), which `finishResponse` says: it often asks what to do next.
+ */
+type Budget = { spoken: number; isCut: boolean; tail?: string }
 
 /** `cacheAs` keeps the synthesized clip at that path for the next time. */
 type Sentence = { text: string; generation: number; cacheAs?: string }
@@ -103,23 +108,44 @@ export const register: Register = (on, options) => {
     sentences.push({ text, generation, cacheAs: `${directory}/notice-${noticeCount++}.wav` })
   }
 
-  /** Queues sentences; with a budget, stops at the limit and says once that the rest is skipped. */
-  const enqueue = (texts: readonly string[], budget?: Budget) => {
-    for (const text of texts) {
-      if (budget !== undefined && config.maxCharsPerTurn > 0) {
-        if (budget.isCut) return
-        const remaining = Math.max(0, Math.floor(config.maxCharsPerTurn - budget.spoken))
-        const characters = Array.from(text)
-        if (characters.length > remaining) {
-          if (remaining > 0) sentences.push({ text: characters.slice(0, remaining).join(""), generation })
-          budget.isCut = true
-          if (config.notices.cut !== "") sentences.push({ text: config.notices.cut, generation })
-          return
-        }
-        budget.spoken += characters.length
+  /** Queues `text` for synthesis, in pieces an engine takes. */
+  const say = (text: string) => {
+    if (text === "") return
+    for (const piece of capLength(text)) sentences.push({ text: piece, generation })
+  }
+
+  /**
+   * Queues sentences; with a budget, stops before the sentence that would pass the limit
+   * (never reading half of one) and says once that the rest is skipped.
+   */
+  const enqueue = (spoken: readonly Spoken[], budget?: Budget) => {
+    for (const text of spoken) {
+      // The code notice is the mod's, not the response's: it uses no budget and is never the last sentence.
+      if (text === SKIPPED_CODE) {
+        if (budget?.isCut !== true) say(config.notices.code)
+        continue
       }
-      sentences.push({ text, generation })
+      if (budget !== undefined && config.maxCharsPerTurn > 0) {
+        const length = Array.from(text).length
+        if (!budget.isCut && budget.spoken + length > config.maxCharsPerTurn) {
+          budget.isCut = true
+          say(config.notices.cut)
+        }
+        // Each skipped sentence may be the last, so the one that passes the limit counts too.
+        if (budget.isCut) {
+          budget.tail = text
+          continue
+        }
+        budget.spoken += length
+      }
+      say(text)
     }
+  }
+
+  /** Ends a response: past the limit, says its last sentence after the cut notice. */
+  const finishResponse = (budget: Budget) => {
+    if (budget.tail !== undefined && Array.from(budget.tail).length <= MAX_TAIL) say(budget.tail)
+    budget.tail = undefined
   }
 
   on("session.start", async ($, e, next) => {
@@ -428,7 +454,11 @@ export const register: Register = (on, options) => {
   on("turn.complete", async ($, e, next) => {
     if (e.reason === "aborted" && e.agentId === undefined) await stop()
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
-      if (config.mode === "final" && e.reason === "answer") enqueue(toSentences(e.answer), { spoken: 0, isCut: false })
+      if (config.mode === "final" && e.reason === "answer") {
+        const budget: Budget = { spoken: 0, isCut: false }
+        enqueue(toSentences(e.answer), budget)
+        finishResponse(budget)
+      }
       const notice = TURN_NOTICES[e.reason]
       if (config.mode === "notify" && notice !== undefined && config.notices[notice] !== "") enqueue([config.notices[notice]])
     }
@@ -466,7 +496,7 @@ export const register: Register = (on, options) => {
     const budget: Budget = { spoken: 0, isCut: false }
     const splitter = new SpeechSplitter()
     const responseGeneration = generation
-    const queueResponse = (texts: string[]) => {
+    const queueResponse = (texts: readonly Spoken[]) => {
       if (!isTurnMuted && responseGeneration === generation) enqueue(texts, budget)
     }
     let block: number | undefined
@@ -482,6 +512,7 @@ export const register: Register = (on, options) => {
     } finally {
       // Runs even when the engine stops pulling after the last chunk: the line without a newline is said too.
       queueResponse(splitter.flush())
+      if (!isTurnMuted && responseGeneration === generation) finishResponse(budget)
     }
     return stream.result
   })

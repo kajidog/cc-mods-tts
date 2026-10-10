@@ -101,7 +101,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 どのモードでも、以下の操作待ちのダイアログが出たら読み上げを止めて通知します:
 
-| ダイアログ | 読む文（既定。`/config` の Notice で変えられる） |
+| ダイアログ | 読む文（既定。`/config` の TTS notice で変えられる） |
 |---|---|
 | 質問（AskUserQuestion） | 1件: 質問があります。＋質問文 / 複数: 質問が3件あります。 |
 | プランの承認（ExitPlanMode） | プランの確認をお願いします。 |
@@ -114,41 +114,47 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 `ffplay` / `powershell` では、再生終了時に語尾が途切れるのを抑えるため、無音除去後の WAV に0.2秒の無音を足します。この処理には `ffmpeg` が必要です。`ffmpeg` がない場合は、無音除去・追加を行わず元の音声を再生します。
 
+WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由するため、負荷によって「ジリジリ」とノイズが混じることがあります。気になる場合は `/config` の `TTS: Player` を `powershell` にすると、Windows 側で直接再生するので改善します（文ごとに PowerShell を起動するため、文と文の間は少し空きます）。
+
 ## 設定
 
-設定はすべて `/config` の tts にまとめてます。
+設定はすべて `/config` の tts にまとめてます。項目名はどれも `TTS:` / `TTS notice:` で始まります。
 
-以下、一覧
+<details>
+<summary>設定一覧</summary>
 
 | 項目（キー） | 内容 | 既定 |
 |---|---|---|
-| Enabled（`enabled`） | 読み上げる / 読み上げない | true |
-| Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
-| TTS engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
-| Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
-| Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
-| Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
-| Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
-| Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って止める。0 で無制限 | 600 |
-| Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
-| Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
-| Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
-| Irodori voice（`irodoriVoice`） | Irodori の声（`/tts voice` で選べる） | （未設定） |
-| VOICEVOX URL（`voicevoxUrl`） | VOICEVOX 互換エンジンの URL（AivisSpeech は `http://localhost:10101`） | `http://localhost:50021` |
-| VOICEVOX speaker（`voicevoxSpeaker`） | VOICEVOX のスタイル id（`/tts voice` で選べる） | 3 |
-| Command（`command`） | engine=command のときのコマンド。空白区切り、`{out}` が書き出す wav のパスに置き換わり、本文は標準入力で渡る | （未設定） |
-| Notice: done / error / refusal（`noticeDone` / `noticeError` / `noticeRefusal`） | notify モードでターン終了時に言う文 | 完了しました。/ エラーで止まりました。/ 応答できませんでした。 |
-| Notice: question（`noticeQuestion`） | 質問が1件出たとき、質問文の前に言う文 | 質問があります。 |
-| Notice: questions（`noticeQuestions`） | 質問が複数出たときに言う文。`{n}` が件数になる | 質問が{n}件あります。 |
-| Notice: plan（`noticePlan`） | プランの承認待ちで言う文 | プランの確認をお願いします。 |
-| Notice: command（`noticeCommand`） | Bash の許可ダイアログで、コマンドの説明の前に言う文 | コマンドの確認をお願いします。 |
-| Notice: tool（`noticeTool`） | その他のツールの許可ダイアログで言う文 | ツールの許可をお願いします。 |
-| Notice: cut（`noticeCut`） | 文字数の上限で読むのをやめたときに言う文 | 以下、省略します。 |
+| TTS: Enabled（`enabled`） | 読み上げる / 読み上げない | true |
+| TTS: Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
+| TTS: Engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
+| TTS: Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
+| TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1.1 |
+| TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
+| TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
+| TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「途中を省略します。」と言って残りを飛ばし、応答の最後の1文だけ読む。0 で無制限 | 600 |
+| TTS: Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
+| TTS: Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
+| TTS: Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
+| TTS: Irodori voice（`irodoriVoice`） | Irodori の声（`/tts voice` で選べる） | （未設定） |
+| TTS: VOICEVOX URL（`voicevoxUrl`） | VOICEVOX 互換エンジンの URL（AivisSpeech は `http://localhost:10101`） | `http://localhost:50021` |
+| TTS: VOICEVOX speaker（`voicevoxSpeaker`） | VOICEVOX のスタイル id（`/tts voice` で選べる） | 3 |
+| TTS: Command（`command`） | engine=command のときのコマンド。空白区切り、`{out}` が書き出す wav のパスに置き換わり、本文は標準入力で渡る | （未設定） |
+| TTS notice: done / error / refusal（`noticeDone` / `noticeError` / `noticeRefusal`） | notify モードでターン終了時に言う文 | 完了しました。/ エラーで止まりました。/ 応答できませんでした。 |
+| TTS notice: question（`noticeQuestion`） | 質問が1件出たとき、質問文の前に言う文 | 質問があります。 |
+| TTS notice: questions（`noticeQuestions`） | 質問が複数出たときに言う文。`{n}` が件数になる | 質問が{n}件あります。 |
+| TTS notice: plan（`noticePlan`） | プランの承認待ちで言う文 | プランの確認をお願いします。 |
+| TTS notice: command（`noticeCommand`） | Bash の許可ダイアログで、コマンドの説明の前に言う文 | コマンドの確認をお願いします。 |
+| TTS notice: tool（`noticeTool`） | その他のツールの許可ダイアログで言う文 | ツールの許可をお願いします。 |
+| TTS notice: cut（`noticeCut`） | 文字数の上限で残りを飛ばすときに言う文。この後に応答の最後の1文を読む | 途中を省略します。 |
+| TTS notice: code（`noticeCode`） | コードブロックを飛ばすところで言う文（stream / final モード） | コードは省略します。 |
+
+</details>
 
 通知の文はどれも空にするとその通知の読み上げをスキップできます（注：スキップしても既存の再生は止まります）。  
 質問やコマンドの通知を空にした場合は、質問文・コマンドの説明も読みません。
 
-Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限による入力エラーは出しませんが、範囲外の値は Irodori サーバーが拒否する場合があります。文字数の上限に、省略を知らせる通知文は含みません。
+Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限による入力エラーは出しませんが、範囲外の値は Irodori サーバーが拒否する場合があります。文字数の上限に、省略やコードを知らせる通知文と、省略後に読む最後の1文は含みません。上限をまたぐ文は途中まで読まずに飛ばします。最後の1文が300文字を超える場合は読みません。
 
 音声ファイルはセッション用の一時ディレクトリに保存し、再生後に削除します。macOS / Linux / WSL では所有者のみアクセスできる権限で作成し、Windows ネイティブではユーザーの一時フォルダ（`%TEMP%`）のアクセス権を引き継ぎます。通知キャッシュはセッション終了時・Mod の再読み込み時に削除します。プロセスの強制終了などで清掃が実行できなかった場合は、一時ディレクトリに残ることがあります。
 
@@ -169,13 +175,16 @@ Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限
 
 ## 開発
 
+<details>
+<summary>開発者向け: lint・テスト・リリースの手順</summary>
+
 ```sh
-npx -y @biomejs/biome@2.5.14 lint --error-on-warnings .
-claude plugin validate --strict .
-CLAUDE_CODE_PLUGIN_DIR_WATCH=1 claude --init-only --plugin-dir .
-npx -y -p typescript@5.8.3 tsc -p .
-claude plugin test .
+npm install
+CLAUDE_CODE_PLUGIN_DIR_WATCH=1 claude --init-only --plugin-dir .  # .claude-plugin/types/ を生成（型チェックに必要）
+npm run check  # lint・validate・型チェック・test をまとめて実行
 ```
+
+個別には `npm run lint` / `npm run validate` / `npm run typecheck` / `npm test` で実行できます。Biome と TypeScript は devDependencies で固定し、`claude` は PATH にあるものを使います。
 
 CI（`.github/workflows/ci.yml`）は main への push と PR で lint を実行し、Linux・Windows で validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
 
@@ -201,6 +210,8 @@ npm run changeset
 最初に GitHub リポジトリの **Settings → Actions → General → Workflow permissions** で **Allow GitHub Actions to create and approve pull requests** を有効にしてください（[Changesets の設定手順](https://github.com/changesets/action/tree/v2#requirements)）。標準の `GITHUB_TOKEN` を使うため、追加のトークンは不要です。自動作成された PR の CI が承認待ちになった場合は、PR 画面の **Approve workflows to run** で実行を承認してください（[GitHub の仕様](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)）。
 
 手元でリリース差分を生成する場合は `npm run release:version`、バージョンの整合性確認は `npm run check:version` を使います。履歴の生成時はプラグイン側も同期するため、`changeset version` 単体では実行しません。バージョン管理用の `package.json` は `private: true` で、npm 公開や GitHub Release の作成は行いません。
+
+</details>
 
 ## ライセンス
 

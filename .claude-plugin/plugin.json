@@ -9,13 +9,13 @@
   "userConfig": {
     "enabled": {
       "type": "boolean",
-      "title": "Enabled",
+      "title": "TTS: Enabled",
       "description": "Read replies aloud. /tts on and /tts off set this.",
       "default": true
     },
     "mode": {
       "type": "string",
-      "title": "Read mode",
+      "title": "TTS: Read mode",
       "description": "stream: every sentence as the reply streams. final: only the turn's final answer, once it ends. notify: only short notices (done, error, a question or plan waiting for you).",
       "default": "stream",
       "options": [
@@ -26,7 +26,7 @@
     },
     "engine": {
       "type": "string",
-      "title": "TTS engine",
+      "title": "TTS: Engine",
       "description": "voicevox: VOICEVOX or a compatible engine (AivisSpeech, COEIROINK v1). irodori: Irodori-TTS (/v1/audio/speech). command: the command below.",
       "default": "voicevox",
       "options": [
@@ -37,7 +37,7 @@
     },
     "fallback": {
       "type": "string",
-      "title": "Fallback engine",
+      "title": "TTS: Fallback engine",
       "description": "Tried for a sentence the engine above fails (its server down, a setting unset). none: report the error and skip the sentence.",
       "default": "none",
       "options": [
@@ -49,19 +49,19 @@
     },
     "speed": {
       "type": "number",
-      "title": "Speed",
+      "title": "TTS: Speed",
       "description": "Speech speed multiplier (Irodori: 0.25–4, VOICEVOX: speedScale). The mod does not enforce Irodori's lower limit; its server may reject values outside that range. engine=command ignores it.",
-      "default": 1
+      "default": 1.1
     },
     "volume": {
       "type": "number",
-      "title": "Volume",
+      "title": "TTS: Volume",
       "description": "Playback volume multiplier for every engine (1: as synthesized, 0.5: half, 2: double). Applied by the player; aplay and powershell need ffmpeg for it.",
       "default": 1
     },
     "player": {
       "type": "string",
-      "title": "Player",
+      "title": "TTS: Player",
       "description": "How a wav is played. auto: ffplay then powershell.exe on native Windows; ffplay, paplay, aplay, afplay, powershell.exe elsewhere.",
       "default": "auto",
       "options": [
@@ -75,105 +75,111 @@
     },
     "maxCharsPerTurn": {
       "type": "number",
-      "title": "Max characters per response",
-      "description": "Maximum characters read from one model response, excluding the cut notice; text before a tool call and the answer after it count apart. 0 reads everything.",
+      "title": "TTS: Max characters per response",
+      "description": "Maximum characters read from one model response, excluding the cut notice and the response's last sentence, still said after it; text before a tool call and the answer after it count apart. 0 reads everything.",
       "default": 600
     },
     "interruptOnPrompt": {
       "type": "boolean",
-      "title": "Stop on new prompt",
+      "title": "TTS: Stop on new prompt",
       "description": "Stop speaking when you submit a new prompt.",
       "default": true
     },
     "modelPrompt": {
       "type": "string",
-      "title": "Prompt for the model",
+      "title": "TTS: Prompt for the model",
       "description": "Added to Claude's system prompt while replies are read (stream and final modes), so that what is spoken reads well. Empty: add nothing.",
       "default": "応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。"
     },
     "irodoriUrl": {
       "type": "string",
-      "title": "Irodori URL",
+      "title": "TTS: Irodori URL",
       "description": "Base URL of Irodori-TTS.",
       "default": "http://localhost:8088"
     },
     "irodoriVoice": {
       "type": "string",
-      "title": "Irodori voice",
+      "title": "TTS: Irodori voice",
       "description": "Reference voice id registered on the Irodori server.",
       "default": ""
     },
     "voicevoxUrl": {
       "type": "string",
-      "title": "VOICEVOX URL",
+      "title": "TTS: VOICEVOX URL",
       "description": "Base URL of VOICEVOX (AivisSpeech: http://localhost:10101).",
       "default": "http://localhost:50021"
     },
     "voicevoxSpeaker": {
       "type": "number",
-      "title": "VOICEVOX speaker",
+      "title": "TTS: VOICEVOX speaker",
       "description": "Style id passed as speaker (3: ずんだもん ノーマル).",
       "default": 3
     },
     "command": {
       "type": "string",
-      "title": "Command (engine=command)",
+      "title": "TTS: Command (engine=command)",
       "description": "For engine=command: argv split on spaces, {out} replaced by the wav path to write; the text arrives on stdin.",
       "default": ""
     },
     "noticeDone": {
       "type": "string",
-      "title": "Notice: done",
+      "title": "TTS notice: done",
       "description": "Said in notify mode as a turn ends with an answer. Empty: say nothing.",
       "default": "完了しました。"
     },
     "noticeError": {
       "type": "string",
-      "title": "Notice: error",
+      "title": "TTS notice: error",
       "description": "Said in notify mode as an API error ends a turn. Empty: say nothing.",
       "default": "エラーで止まりました。"
     },
     "noticeRefusal": {
       "type": "string",
-      "title": "Notice: refusal",
+      "title": "TTS notice: refusal",
       "description": "Said in notify mode as the model refuses. Empty: say nothing.",
       "default": "応答できませんでした。"
     },
     "noticeQuestion": {
       "type": "string",
-      "title": "Notice: question",
+      "title": "TTS notice: question",
       "description": "Said as a question opens, before the question itself. Empty: silence both the notice and the question.",
       "default": "質問があります。"
     },
     "noticeQuestions": {
       "type": "string",
-      "title": "Notice: questions",
+      "title": "TTS notice: questions",
       "description": "Said as several questions open, in place of reading them; {n} is their number. Empty: say nothing.",
       "default": "質問が{n}件あります。"
     },
     "noticePlan": {
       "type": "string",
-      "title": "Notice: plan",
+      "title": "TTS notice: plan",
       "description": "Said as a plan waits for approval. Empty: say nothing.",
       "default": "プランの確認をお願いします。"
     },
     "noticeCommand": {
       "type": "string",
-      "title": "Notice: command",
+      "title": "TTS notice: command",
       "description": "Said as a Bash permission dialog opens, before the command's description. Empty: silence both the notice and the description.",
       "default": "コマンドの確認をお願いします。"
     },
     "noticeTool": {
       "type": "string",
-      "title": "Notice: tool",
+      "title": "TTS notice: tool",
       "description": "Said as any other tool's permission dialog opens. Empty: say nothing.",
       "default": "ツールの許可をお願いします。"
     },
     "noticeCut": {
       "type": "string",
-      "title": "Notice: cut",
-      "description": "Said where a response passes Max characters per response and the rest is skipped. Empty: say nothing.",
-      "default": "以下、省略します。"
+      "title": "TTS notice: cut",
+      "description": "Said where a response passes 'TTS: Max characters per response' and the rest is skipped. Empty: say nothing.",
+      "default": "途中を省略します。"
+    },
+    "noticeCode": {
+      "type": "string",
+      "title": "TTS notice: code",
+      "description": "Said where a fenced code block is skipped (stream and final modes). Empty: say nothing.",
+      "default": "コードは省略します。"
     }
   }
 }

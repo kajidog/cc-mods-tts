@@ -17,6 +17,7 @@ export type Notices = {
   command: string
   tool: string
   cut: string
+  code: string
 }
 
 const NOTICE_OPTIONS: Record<keyof Notices, string> = {
@@ -29,6 +30,7 @@ const NOTICE_OPTIONS: Record<keyof Notices, string> = {
   command: "noticeCommand",
   tool: "noticeTool",
   cut: "noticeCut",
+  code: "noticeCode",
 }
 
 /** The settings every engine shares; each engine reads its own in `load`. */

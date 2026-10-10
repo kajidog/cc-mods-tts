@@ -144,15 +144,72 @@ test("stop cancels an in-flight synthesis without falling back and frees the que
   expect(observed.processes.some(e => e.argv[0] === "curl")).toBe(false)
 })
 
-test("the response budget caps actual characters and adds one cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+test("the response budget stops before the sentence that passes it and adds one cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)
-  await $.turn.complete(completed("あ".repeat(800)))
+  // Five sentences of 160 characters: three fit in 600, the fourth passes.
+  await $.turn.complete(completed(`${"あ".repeat(159)}。`.repeat(5)))
   await observed.idle()
   await settle()
   const spoken = observed.spoken()
-  expect(spoken.at(-1)).toBe("以下、省略します。")
-  expect(spoken.slice(0, -1).join("").length).toBe(600)
+  const cut = spoken.indexOf("途中を省略します。")
+  expect(spoken.lastIndexOf("途中を省略します。")).toBe(cut)
+  expect(spoken.slice(0, cut).map(sentence => sentence?.length)).toEqual([160, 160, 160])
+})
+
+test("past the budget, the response's last sentence is still said after the cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(590)}。${"い".repeat(30)}。${"う".repeat(30)}。進めますか？`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "進めますか？"])
+})
+
+test("the sentence that passes the budget is said whole when it is the last", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(595)}。このまま進めてもいいですか？`))
+  await observed.idle()
+  await settle()
+  const spoken = observed.spoken()
+  expect(spoken.slice(-2)).toEqual(["途中を省略します。", "このまま進めてもいいですか？"])
+  expect(spoken.filter(sentence => sentence?.includes("進め"))).toHaveLength(1)
+})
+
+test("a last sentence longer than an engine takes is said whole after the cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  const last = `${"お".repeat(200)}ですか？`
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。${last}`))
+  await observed.idle()
+  await settle()
+  const spoken = observed.spoken()
+  const cut = spoken.indexOf("途中を省略します。")
+  expect(spoken.slice(cut + 1).join("")).toBe(last)
+})
+
+test("a last sentence too long to be a question is not said after the cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(400)}`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().at(-1)).toBe("途中を省略します。")
+})
+
+test("the code notice uses no budget and is never the last sentence", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(595)}。\n\`\`\`sh\nnpm test\n\`\`\`\n終わり。`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["コードは省略します。", "終わり。"])
+
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。進めますか？\n\`\`\`sh\nnpm test\n\`\`\``))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "進めますか？"])
 })
 
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
@@ -160,7 +217,7 @@ test("test speech formats lists, brackets and paths while preserving newlines", 
   await $.session.start(start)
   await $.command.run(command("test — 項目（任意）です。\n1) /home/me/日本語/main.ts:10 を確認。\n```sh\nnpm test\n```"))
   await observed.idle()
-  expect(observed.spoken()).toEqual(["項目 任意 です。", "main.tsの10行目 を確認。"])
+  expect(observed.spoken()).toEqual(["項目 任意 です。", "main.tsの10行目 を確認。", "コードは省略します。"])
 })
 
 test("test speech reports when formatting leaves nothing to read", { options }, async ($, on) => {

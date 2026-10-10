@@ -11,9 +11,16 @@
   "scripts": {
     "changeset": "changeset",
     "release:version": "changeset version && node scripts/sync-plugin-version.mjs && npm install --package-lock-only --ignore-scripts",
-    "check:version": "node scripts/sync-plugin-version.mjs --check"
+    "check:version": "node scripts/sync-plugin-version.mjs --check",
+    "lint": "biome lint --error-on-warnings .",
+    "typecheck": "tsc -p .",
+    "validate": "claude plugin validate --strict .",
+    "test": "claude plugin test .",
+    "check": "npm run lint && npm run validate && npm run typecheck && npm test"
   },
   "devDependencies": {
-    "@changesets/cli": "3.0.3"
+    "@biomejs/biome": "2.5.14",
+    "@changesets/cli": "3.0.3",
+    "typescript": "5.8.3"
   }
 }

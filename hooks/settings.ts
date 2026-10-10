@@ -12,7 +12,7 @@ export const MODE_LABELS: Record<ReadMode, string> = {
   final: "final   ターンが終わってから最終的な返答だけ",
   notify: "notify  完了・エラーなどの短い通知だけ",
 }
-export const SPEEDS = ["0.8", "1", "1.2", "1.5", "2"]
+export const SPEEDS = ["0.8", "1", "1.1", "1.2", "1.5", "2"]
 export const VOLUMES = ["0.5", "0.75", "1", "1.25", "1.5"]
 
 /** A setting change ready to save: where it goes, and how it reads before and after. */

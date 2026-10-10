@@ -27,7 +27,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npx -y @biomejs/biome@2.5.14 lint --error-on-warnings .
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
 
   test:
     strategy:
@@ -39,14 +41,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
       # The mod API is early access: keep the version the mod was last checked with.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.296 typescript@5.8.3
+      - run: npm install -g @anthropic-ai/claude-code@2.1.296
       # The same static analysis Claude Code runs when it loads the mod.
-      - run: claude plugin validate --strict .
+      - run: npm run validate
       - name: Generate mod API types
         run: claude --init-only --plugin-dir .
         env:
           # Emit API declarations even in a non-interactive session.
           CLAUDE_CODE_PLUGIN_DIR_WATCH: "1"
-      - run: tsc -p .
-      - run: claude plugin test .
+      - run: npm run typecheck
+      - run: npm test

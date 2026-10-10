@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { SpeechSplitter, toSentences, toSpeakable } from "../hooks/speech-text"
+import { capLength, SKIPPED_CODE, SpeechSplitter, toSentences, toSpeakable } from "../hooks/speech-text"
 
 const feed = (pieces: readonly string[]) => {
   const splitter = new SpeechSplitter()
@@ -15,9 +15,9 @@ describe("SpeechSplitter", () => {
     expect(rest).toEqual(["今日はいい天気"])
   })
 
-  test("never speaks fenced code", async () => {
+  test("never speaks fenced code, and marks once where it is skipped", async () => {
     const { released, rest } = feed(["見てください。\n```ts\nconst a = 1。\n", "```\n終わり。"])
-    expect([...released.flat(), ...rest]).toEqual(["見てください。", "終わり。"])
+    expect([...released.flat(), ...rest]).toEqual(["見てください。", SKIPPED_CODE, "終わり。"])
   })
 
   test("skips tables and keeps list text", async () => {
@@ -58,16 +58,14 @@ describe("SpeechSplitter", () => {
     for (const marker of ["`", "~"]) {
       const code = `${marker.repeat(4)}md\n${marker.repeat(3)}js\nconst secret = 42;\n${marker.repeat(3)}\n${marker.repeat(4)}\n完了。`
       const { released, rest } = feed(Array.from(code))
-      expect([...released.flat(), ...rest]).toEqual(["完了。"])
+      expect([...released.flat(), ...rest]).toEqual([SKIPPED_CODE, "完了。"])
     }
-    expect(toSentences("```js\n~~~\nsecret\n```\n完了。")).toEqual(["完了。"])
+    expect(toSentences("```js\n~~~\nsecret\n```\n完了。")).toEqual([SKIPPED_CODE, "完了。"])
   })
 
-  test("keeps surrogate pairs together when splitting long sentences", async () => {
-    const text = `${"あ".repeat(159)}😀続き。`
-    const sentences = toSentences(text)
-    expect(sentences.join("")).toBe(text)
-    for (const sentence of sentences) expect(() => encodeURIComponent(sentence)).not.toThrow()
+  test("releases a long sentence whole", async () => {
+    const text = `${"あ".repeat(300)}。`
+    expect(toSentences(text)).toEqual([text])
   })
 })
 
@@ -76,7 +74,7 @@ test("toSpeakable reads link text and hides URLs", async () => {
 })
 
 test("toSentences reads a whole answer without its code", async () => {
-  expect(toSentences("直しました。\n```sh\nnpm test\n```\n- 確認済み")).toEqual(["直しました。", "確認済み"])
+  expect(toSentences("直しました。\n```sh\nnpm test\n```\n- 確認済み")).toEqual(["直しました。", SKIPPED_CODE, "確認済み"])
 })
 
 test("toSpeakable reads a path as its file name and line", async () => {
@@ -123,4 +121,12 @@ test("toSpeakable leaves slashes that are not clearly paths", async () => {
   for (const text of ["and/or", "1/2 と 2026/10/10", "v1.2/v1.3", "React/Next.js で作る", "TCP/IP", "e.g./i.e.", "example.com:8080/api/user.json"]) {
     expect(toSpeakable(text)).toBe(text)
   }
+})
+
+test("capLength keeps surrogate pairs together when splitting long sentences", async () => {
+  const text = `${"あ".repeat(159)}😀続き。`
+  const pieces = capLength(text)
+  expect(pieces.length).toBeGreaterThan(1)
+  expect(pieces.join("")).toBe(text)
+  for (const piece of pieces) expect(() => encodeURIComponent(piece)).not.toThrow()
 })
