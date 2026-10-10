@@ -19,13 +19,13 @@ export function dialogSpeech(tool: string, input: unknown, notices: Notices): Di
       // Several questions are counted, not read: the dialog shows them one at a time.
       if (questions.length > 1) return { notice: notices.questions.replaceAll("{n}", String(questions.length)), detail: [] }
       const question = questions[0]?.question
-      return { notice: notices.question, detail: typeof question === "string" ? toSentences(question) : [] }
+      return { notice: notices.question, detail: notices.question !== "" && typeof question === "string" ? toSentences(question) : [] }
     }
     case "ExitPlanMode":
       return { notice: notices.plan, detail: [] }
     case "Bash": {
       const { description } = fields
-      return { notice: notices.command, detail: typeof description === "string" ? toSentences(description) : [] }
+      return { notice: notices.command, detail: notices.command !== "" && typeof description === "string" ? toSentences(description) : [] }
     }
     default:
       return { notice: notices.tool, detail: [] }

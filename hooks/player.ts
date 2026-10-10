@@ -22,15 +22,14 @@ export function trimCommand(file: string): string[] {
 }
 
 /**
- * The command that plays `file` at `volume` (1 as synthesized). It prints its
- * shell's pid first and then becomes the player, so the pid stops playback.
+ * Plays `file` at `volume` (1 as synthesized), preserving the cached original.
  */
 export function playCommand(player: string, file: string, volume: number): string[] {
-  const shell = (script: string) => ["sh", "-c", `echo $$; ${script}`, "tts-play", file]
+  const shell = (script: string) => ["sh", "-c", script, "tts-play", file]
   const isScaled = volume !== 1
-  // aplay and SoundPlayer have no volume: ffmpeg rewrites the clip first, when present.
+  // aplay and SoundPlayer have no volume: play a scaled copy when ffmpeg is present.
   const scaleFile = isScaled
-    ? `command -v ffmpeg >/dev/null && ffmpeg -loglevel error -y -i "$1" -af volume=${volume} "$1.v.wav" && mv -f "$1.v.wav" "$1"; `
+    ? `command -v ffmpeg >/dev/null && ffmpeg -loglevel error -y -i "$1" -af volume=${volume} "$1.v.wav" && set -- "$1.v.wav"; `
     : ""
   switch (player) {
     case "ffplay":

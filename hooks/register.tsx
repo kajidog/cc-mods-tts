@@ -1,32 +1,27 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register } from "claude-code"
 
-import type { Picker, PickerOption, Setting } from "../types"
+import type { Picker, Setting } from "../types"
 
+import { Channel } from "./channel"
 import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
 import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { FIND_PLAYER, playCommand, trimCommand } from "./player"
+import { SpeechProcess } from "./process"
+import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
 import { SpeechSplitter, toSentences } from "./speech-text"
 
-const MODES: readonly ReadMode[] = ["stream", "final", "notify"]
-const MODE_LABELS: Record<ReadMode, string> = {
-  stream: "stream  返答を一文ずつ、流れてくるそばから",
-  final: "final   ターンが終わってから最終的な返答だけ",
-  notify: "notify  完了・エラーなどの短い通知だけ",
-}
-const SPEEDS = ["0.8", "1", "1.2", "1.5", "2"]
-const VOLUMES = ["0.5", "0.75", "1", "1.25", "1.5"]
 const HELP = [
   "/tts                   state: on/off, mode, engine, speed, volume",
   "/tts on | off          read replies aloud or not",
-  "/tts stop              drop what is playing and queued",
+  "/tts stop              stop speech and mute the rest of this turn",
   "/tts test [text]       read a test sentence",
   "/tts mode [name]       stream | final | notify; no name opens a picker",
   "/tts engine [name]     switch engines; no name checks whether each one answers",
   "/tts voice [id]        pick a voice; no id opens a picker",
-  "/tts speed [n]         speech speed (1: as is); no value opens a picker",
+  "/tts speed [n]         speech speed (1: as is, Irodori: 0.25–4); no value opens a picker",
   "/tts volume [n]        playback volume (1: as is); no value opens a picker",
   "/tts pin | unpin       keep this directory's engine and voice apart from the rest, or stop",
   "/tts config            every setting and its value; change them in /config → tts",
@@ -36,39 +31,14 @@ const HELP = [
 const TURN_NOTICES: Partial<Record<string, keyof Notices>> = { answer: "done", error: "error", refusal: "refusal" }
 const PICKER_PANE = "tts-picker"
 const picker = atom({ plugin: "tts", key: "picker" } as const, null as Picker | null)
+// Survives a reload so the next module can remove the old module's audio files.
+const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, null as string | null)
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
 
-/** An unbounded queue whose `take` waits for the next item. */
-class Channel<T> {
-  private items: T[] = []
-  private waiter: (() => void) | undefined
-
-  get size(): number {
-    return this.items.length
-  }
-
-  push(item: T) {
-    this.items.push(item)
-    this.waiter?.()
-    this.waiter = undefined
-  }
-
-  async take(): Promise<T> {
-    while (this.items.length === 0) await new Promise<void>(resolve => (this.waiter = resolve))
-    return this.items.shift() as T
-  }
-}
-
 /** How much of one model response has been queued; past the limit the rest is dropped. */
 type Budget = { spoken: number; isCut: boolean }
-
-/** A setting change ready to save: where it goes, and how it reads before and after. */
-type Change =
-  | { label: string; previous: string; next: string; config: { key: string; value: string | number } }
-  | { label: string; previous: string; next: string; pins: (stored: Pins) => Pins }
-  | { error: string }
 
 /** `cacheAs` keeps the synthesized clip at that path for the next time. */
 type Sentence = { text: string; generation: number; cacheAs?: string }
@@ -84,16 +54,22 @@ export const register: Register = (on, options) => {
 
   // `generation` moves on at every stop: queued work of an older one is dropped.
   let generation = 0
+  let isTurnMuted = false
   const { isEnabled } = config
   let isSynthesizing = false
   let player: string | undefined
-  let playingPid: string | undefined
+  const synthesisProcess = new SpeechProcess()
+  const playbackProcess = new SpeechProcess()
   const sentences = new Channel<Sentence>()
   const clips = new Channel<Clip>()
   // Notices are few and fixed: each is synthesized once per load, then replayed at once.
   const cachedNotices = new Map<string, string>()
-  let directory = "/tmp"
+  let directory = ""
   let noticeCount = 0
+  // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
+  let engineIssue: string | undefined
+  // Set by session.start: probes the engine in use and shows the result.
+  let recheckEngine = () => {}
 
   /** Rebuilds the engines from the options with this directory's pin laid over them. */
   const applyPins = (stored: Pins) => {
@@ -104,51 +80,16 @@ export const register: Register = (on, options) => {
     fallback = config.fallback === undefined ? undefined : ENGINES[config.fallback].load(effective)
     // Cached notices were spoken in the voice before.
     cachedNotices.clear()
+    recheckEngine()
   }
 
-  /** What saving `value` for `setting` changes; while pinned, engine and voice go to the pin. */
-  const planChange = (setting: Setting, value: string): Change => {
-    const pin = pins[cwd]
-    const pinned = (update: (base: Pin) => Pin) => (stored: Pins) => {
-      const base = stored[cwd] ?? pin
-      return base === undefined ? stored : { ...stored, [cwd]: update(base) }
-    }
-    switch (setting) {
-      case "mode":
-        if (!MODES.includes(value as ReadMode)) return { error: `mode is one of ${MODES.join(", ")}` }
-        return { label: "mode", previous: config.mode, next: value, config: { key: "tts.mode", value } }
-      case "speed":
-      case "volume": {
-        const scale = Number(value)
-        if (!(scale > 0 && scale <= 4)) return { error: `${setting} is a number above 0, up to 4` }
-        const previous = String(setting === "speed" ? options.speed : config.volume)
-        return { label: setting, previous, next: String(scale), config: { key: `tts.${setting}`, value: scale } }
-      }
-      case "engine": {
-        if (!(value in ENGINES)) return { error: `engine is one of ${Object.keys(ENGINES).join(", ")}` }
-        const name = value as EngineName
-        if (pin === undefined) return { label: "engine", previous: config.engine, next: name, config: { key: "tts.engine", value: name } }
-        return { label: "engine (this directory)", previous: config.engine, next: name, pins: pinned(base => ({ ...base, engine: name })) }
-      }
-      case "voice": {
-        const { voices } = engine
-        if (voices === undefined) return { error: `engine=${config.engine} has no voices; set it up in /config` }
-        if (pin === undefined) return { label: "voice", previous: voices.current, next: value, config: voices.select(value) }
-        const name = config.engine
-        return {
-          label: "voice (this directory)",
-          previous: voices.current,
-          next: value,
-          pins: pinned(base => ({ ...base, voices: { ...base.voices, [name]: value } })),
-        }
-      }
-    }
-  }
+  /** What saving `value` for `setting` changes, against the settings in effect here. */
+  const changeOf = (setting: Setting, value: string) => planChange(setting, value, { options, config, engine, cwd, pin: pins[cwd] })
 
-  /** Drops queued speech; answers the pid of the player to kill, if one plays. */
-  const stop = (): string | undefined => {
+  /** Invalidates queued speech and closes the active synthesis and playback streams. */
+  const stop = async () => {
     generation += 1
-    return playingPid
+    await Promise.all([synthesisProcess.stop(), playbackProcess.stop()])
   }
 
   /** Queues `text` to be said next; called right after a stop, it plays first. */
@@ -164,12 +105,15 @@ export const register: Register = (on, options) => {
     for (const text of texts) {
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
         if (budget.isCut) return
-        if (budget.spoken >= config.maxCharsPerTurn) {
+        const remaining = Math.max(0, Math.floor(config.maxCharsPerTurn - budget.spoken))
+        const characters = Array.from(text)
+        if (characters.length > remaining) {
+          if (remaining > 0) sentences.push({ text: characters.slice(0, remaining).join(""), generation })
           budget.isCut = true
           if (config.notices.cut !== "") sentences.push({ text: config.notices.cut, generation })
           return
         }
-        budget.spoken += text.length
+        budget.spoken += characters.length
       }
       sentences.push({ text, generation })
     }
@@ -182,24 +126,26 @@ export const register: Register = (on, options) => {
     player = config.player === "auto" ? (await $.process.run(FIND_PLAYER)).stdout.trim() || undefined : config.player
     if (player === undefined) $.ui.toast("tts: no audio player found (ffplay, paplay, aplay, afplay, powershell.exe)")
 
-    directory = `/tmp/claude-tts-${await $.session.id()}`
-    await $.process.run(["mkdir", "-p", directory])
+    directory = await prepareDirectory($)
     let clipCount = 0
     let lastErrorAt = 0
 
-    // Either loop may finish the last item, a dropped one included.
-    const clearStatusWhenIdle = () => {
-      if (!isSynthesizing && sentences.size === 0 && clips.size === 0) $.ui.status(undefined)
+    const noteEngine = (error?: unknown) => {
+      const issue = error === undefined ? undefined : `${config.engine} ${/is not set/.test(String(error)) ? "unset" : "down"}`
+      showEngineIssue(issue)
     }
-    // A reload kills the player mid-clip, leaving the last module's status behind.
+    // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
+    const showEngineIssue = (issue: string | undefined) => {
+      if (issue === engineIssue) return
+      engineIssue = issue
+      $.ui.status(issue)
+    }
+    // The last module's line stays after a reload.
     $.ui.status(undefined)
 
-    // The fallback reads on quietly: one toast a burst says the engine is failing.
-    let lastFallbackAt = 0
+    // The fallback reads on quietly: the status line says the engine is failing.
     const reportFallback = (error: unknown) => {
       $.ui.log(`tts: ${config.engine} failed, read with ${config.fallback}: ${String(error)}`, { to: "debug" })
-      if (Date.now() - lastFallbackAt > 30_000) $.ui.toast(`tts: ${config.engine} failed; reading with ${config.fallback}`)
-      lastFallbackAt = Date.now()
     }
 
     const reportError = (error: unknown) => {
@@ -214,31 +160,42 @@ export const register: Register = (on, options) => {
     void (async () => {
       for (;;) {
         const sentence = await sentences.take()
-        if (sentence.generation !== generation) {
-          clearStatusWhenIdle()
-          continue
-        }
+        if (sentence.generation !== generation) continue
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
+        const isCurrent = () => sentence.generation === generation
         isSynthesizing = true
+        let isFallback = false
         try {
           try {
-            await synthesize($, engine, sentence.text, file)
+            await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
+            if (isCurrent()) noteEngine()
           } catch (error) {
-            if (fallback === undefined) throw error
-            await synthesize($, fallback, sentence.text, file)
+            if (isCurrent()) noteEngine(error)
+            if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
+            isFallback = true
+            await synthesize($, synthesisProcess, fallback, sentence.text, file, isCurrent)
             reportFallback(error)
           }
+          if (!isCurrent()) {
+            await $.process.run(["rm", "-f", file])
+            continue
+          }
           // Done while the clip before plays; an untrimmed clip still plays.
-          await $.process.run(trimCommand(file)).catch(() => undefined)
-          if (sentence.cacheAs !== undefined) cachedNotices.set(sentence.text, file)
-          clips.push({ file, generation: sentence.generation, isCached: sentence.cacheAs !== undefined })
+          await runProcess($, synthesisProcess, trimCommand(file), undefined, 30_000).catch(() => undefined)
+          if (!isCurrent()) {
+            await $.process.run(["rm", "-f", file, `${file}.t.wav`])
+            continue
+          }
+          // A notice the fallback read is kept for this time only: the engine may be back next time.
+          const isCached = sentence.cacheAs !== undefined && !isFallback
+          if (isCached) cachedNotices.set(sentence.text, file)
+          clips.push({ file, generation: sentence.generation, isCached })
         } catch (error) {
           await $.process.run(["rm", "-f", file])
-          if (sentence.generation === generation) reportError(error)
+          if (isCurrent()) reportError(error)
         } finally {
           isSynthesizing = false
         }
-        clearStatusWhenIdle()
       }
     })()
 
@@ -246,41 +203,68 @@ export const register: Register = (on, options) => {
       for (;;) {
         const clip = await clips.take()
         if (clip.generation === generation && player !== undefined) {
-          $.ui.status(`🔊 ${config.engine}`)
           try {
-            for await (const piece of $.process.spawn({ argv: playCommand(player, clip.file, config.volume) })) {
-              if (piece.stream === "stdout" && playingPid === undefined) playingPid = piece.text.split("\n")[0]?.trim()
-            }
+            await playbackProcess.read($.process.spawn({ argv: playCommand(player, clip.file, config.volume) }))
           } catch (error) {
-            reportError(error)
-          } finally {
-            playingPid = undefined
+            if (clip.generation === generation) reportError(error)
           }
         }
-        if (clip.isCached !== true) await $.process.run(["rm", "-f", clip.file])
-        clearStatusWhenIdle()
+        const files = [`${clip.file}.v.wav`]
+        if (clip.isCached !== true) files.push(clip.file)
+        await $.process.run(["rm", "-f", ...files])
       }
     })()
+
+    // Checked at once, so a start or an engine switch shows a dead engine before anything is read.
+    recheckEngine = () => {
+      showEngineIssue(undefined)
+      if (!isEnabled) return
+      const checked = engine
+      void checkEngine($, checked).then(state => {
+        if (checked === engine && state !== "ok") showEngineIssue(`${config.engine} ${state}`)
+      })
+    }
+    recheckEngine()
 
     await $.command.register({
       name: "tts",
       description: "Read replies aloud: on, off, stop, test, mode, engine, voice, speed, volume, pin, unpin, config, help",
       argumentHint: "[on|off|stop|test [text]|mode|engine|voice|speed|volume [value]|pin|unpin|config|help]",
+      // `/tts stop` has to land while a reply is still being read.
+      immediate: true,
     })
     return started
   })
+
+  on("session.end", async ($, e, next) => {
+    await stop()
+    cachedNotices.clear()
+    if (directory !== "") await $.process.run(["rm", "-rf", "--", directory])
+    directory = ""
+    await update($, audioDirectory, () => null)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // /clear, resume and /branch keep this module alive without another session.start, and reset
+  // $.state, which holds the directory for the next reload to remove.
+  on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
+    if (directory === "") directory = await prepareDirectory($)
+    else await update($, audioDirectory, () => directory)
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on("command.run", { command: "tts" }, async ($, e) => {
     const [action = "", ...rest] = e.args.trim().split(/\s+/)
     switch (action) {
       case "on":
       case "off": {
-        if (action === "off") await killPlayer($, stop())
+        if (action === "off") await stop()
         const set = await $.config.set({ key: "tts.enabled", value: action === "on" })
         return { text: "deny" in set && set.deny ? set.deny : action }
       }
       case "stop": {
-        await killPlayer($, stop())
+        isTurnMuted = true
+        await stop()
         return { text: "stopped" }
       }
       case "test": {
@@ -307,7 +291,7 @@ export const register: Register = (on, options) => {
           }
           return { text: [`${config.engine} voices (/tts voice <id>):`, ...options.map(optionLine)].join("\n") }
         }
-        return { text: await commit($, planChange("voice", voice), applyPins) }
+        return { text: await commit($, changeOf("voice", voice), applyPins) }
       }
       case "mode": {
         const name = rest[0] as ReadMode | undefined
@@ -318,7 +302,7 @@ export const register: Register = (on, options) => {
           }
           return { text: `mode: ${config.mode} (${MODES.join(" | ")})` }
         }
-        return { text: await commit($, planChange("mode", name), applyPins) }
+        return { text: await commit($, changeOf("mode", name), applyPins) }
       }
       case "speed":
       case "volume": {
@@ -331,7 +315,7 @@ export const register: Register = (on, options) => {
           }
           return { text: `${action}: ${current}` }
         }
-        return { text: await commit($, planChange(action, value), applyPins) }
+        return { text: await commit($, changeOf(action, value), applyPins) }
       }
       case "pin": {
         const pin: Pin = { engine: config.engine, voices: engine.voices ? { [config.engine]: engine.voices.current } : {} }
@@ -357,7 +341,7 @@ export const register: Register = (on, options) => {
           const rows = await Promise.all(names.map(each => engineRow($, each, ENGINES[each].load(options), config)))
           return { text: ["engines (● answers, ○ down or unset; /tts engine <name> switches):", ...rows].join("\n") }
         }
-        return { text: await commit($, planChange("engine", name), applyPins) }
+        return { text: await commit($, changeOf("engine", name), applyPins) }
       }
       case "help":
         return { text: HELP }
@@ -403,7 +387,7 @@ export const register: Register = (on, options) => {
           autoFocus
           onSelect={async value => {
             await $.ui.close({ id: PICKER_PANE })
-            $.ui.toast(`tts: ${await commit($, planChange(shown.setting, value), applyPins)}`)
+            $.ui.toast(`tts: ${await commit($, changeOf(shown.setting, value), applyPins)}`)
           }}
         />
       </Box>
@@ -411,13 +395,18 @@ export const register: Register = (on, options) => {
   })
 
   on("prompt.submit", async ($, e, next) => {
-    if (config.interruptOnPrompt) await killPlayer($, stop())
+    if (config.interruptOnPrompt) await stop()
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  on("turn.start", async ($, e, next) => {
+    isTurnMuted = false
+    return next(e)
+  })
+
   on("turn.complete", async ($, e, next) => {
-    if (e.reason === "aborted") await killPlayer($, stop())
-    if (isEnabled && e.agentId === undefined) {
+    if (e.reason === "aborted" && e.agentId === undefined) await stop()
+    if (isEnabled && !isTurnMuted && e.agentId === undefined) {
       if (config.mode === "final" && e.reason === "answer") enqueue(toSentences(e.answer), { spoken: 0, isCut: false })
       const notice = TURN_NOTICES[e.reason]
       if (config.mode === "notify" && notice !== undefined && config.notices[notice] !== "") enqueue([config.notices[notice]])
@@ -428,7 +417,7 @@ export const register: Register = (on, options) => {
   // Whatever the mode, a dialog waiting for the person cuts off the reading and is announced.
   on("tool.call", async ($, e, next) => {
     if (isEnabled && DIALOG_TOOLS.has(e.tool)) {
-      await killPlayer($, stop())
+      await stop()
       const { notice, detail } = dialogSpeech(e.tool, e, config.notices)
       queueNotice(notice)
       enqueue(detail)
@@ -439,7 +428,7 @@ export const register: Register = (on, options) => {
   // Raised as a permission dialog is about to be shown, not for a call a rule or the mode settles.
   on("classic.PermissionRequest", async ($, e, next) => {
     if (isEnabled && !DIALOG_TOOLS.has(e.tool_name)) {
-      await killPlayer($, stop())
+      await stop()
       const { notice, detail } = dialogSpeech(e.tool_name, e.tool_input, config.notices)
       queueNotice(notice)
       enqueue(detail)
@@ -455,47 +444,95 @@ export const register: Register = (on, options) => {
     // Each response has its own budget: text before a tool call does not use up the answer's.
     const budget: Budget = { spoken: 0, isCut: false }
     const splitter = new SpeechSplitter()
+    const responseGeneration = generation
+    const queueResponse = (texts: string[]) => {
+      if (!isTurnMuted && responseGeneration === generation) enqueue(texts, budget)
+    }
     let block: number | undefined
     try {
       for await (const chunk of stream) {
         if (chunk.kind === "text") {
-          if (block !== undefined && block !== chunk.index) enqueue(splitter.flush(), budget)
+          if (block !== undefined && block !== chunk.index) queueResponse(splitter.flush())
           block = chunk.index
-          enqueue(splitter.push(chunk.text), budget)
+          queueResponse(splitter.push(chunk.text))
         }
         yield chunk
       }
     } finally {
       // Runs even when the engine stops pulling after the last chunk: the line without a newline is said too.
-      enqueue(splitter.flush(), budget)
+      queueResponse(splitter.flush())
     }
     return stream.result
   })
 }
 
-/** Ends the playback `stop` answered the pid of, if one was playing. */
-async function killPlayer($: EngineInterface, pid: string | undefined) {
-  if (pid !== undefined) await $.process.run(["kill", pid])
+/** Creates an owner-only directory, removing the previous module's files after a reload. */
+async function prepareDirectory($: EngineInterface): Promise<string> {
+  const previous = await read($, audioDirectory)
+  if (previous !== null) await $.process.run(["rm", "-rf", "--", previous])
+  const created = await $.process.run(["mktemp", "-d", "/tmp/claude-tts-XXXXXXXXXX"])
+  if (created.exitCode !== 0 || created.stdout.trim() === "") throw new Error("tts: could not create a private audio directory")
+  const directory = created.stdout.trim()
+  await update($, audioDirectory, () => directory)
+  return directory
 }
 
+
+// Everything handed $ stays in this file: the validator follows $ into this file's functions only.
+
 /** Runs an engine's commands for one sentence; throws on the first that fails. */
-async function synthesize($: EngineInterface, engine: LoadedEngine, text: string, file: string) {
+async function synthesize(
+  $: EngineInterface,
+  process: SpeechProcess,
+  engine: LoadedEngine,
+  text: string,
+  file: string,
+  isCurrent: () => boolean,
+) {
   let stdout = ""
   for (const step of engine.synthesis(text, file)) {
+    if (!isCurrent()) return
     const stdin = typeof step.stdin === "function" ? step.stdin(stdout) : step.stdin
-    const ran = await $.process.run(step.argv, { stdin, timeoutMs: SYNTH_TIMEOUT_MS })
-    if (ran.exitCode !== 0) {
-      throw new Error(`${step.argv[0]} exited ${ran.exitCode}: ${(ran.stderr || ran.stdout).trim().slice(0, 200)}`)
+    const ran = await runProcess($, process, step.argv, stdin, SYNTH_TIMEOUT_MS)
+    if (ran.code !== 0) {
+      throw new Error(`${step.argv[0]} exited ${ran.code}: ${(ran.stderr || ran.stdout).trim().slice(0, 200)}`)
     }
     stdout = ran.stdout
   }
 }
 
+/** A cancellable command with the same time limit synthesis had under process.run. */
+async function runProcess($: EngineInterface, process: SpeechProcess, argv: string[], input: string | undefined, timeoutMs: number) {
+  const running = process.read($.process.spawn({ argv, input }))
+  let timedOut = false
+  const timer = $.clock.after(timeoutMs, () => {
+    timedOut = true
+    void process.stop()
+  })
+  try {
+    const result = await running
+    if (timedOut) throw new Error(`${argv[0]} timed out`)
+    return result
+  } finally {
+    timer.cancel()
+  }
+}
+
+/** Whether the engine can read now: set up (its synthesis builds) and answering its probe. */
+async function checkEngine($: EngineInterface, engine: LoadedEngine): Promise<"ok" | "down" | "unset"> {
+  if (engine.probe === undefined) return "unset"
+  try {
+    engine.synthesis("", "/dev/null")
+  } catch {
+    return "unset"
+  }
+  const probed = await $.process.run(engine.probe, { timeoutMs: 5_000 }).catch(() => undefined)
+  return probed?.exitCode === 0 ? "ok" : "down"
+}
+
 /** ● when the engine answers now, ○ when it is down or not set up. */
 async function answerMark($: EngineInterface, engine: LoadedEngine): Promise<string> {
-  if (engine.probe === undefined) return "○"
-  const probed = await $.process.run(engine.probe, { timeoutMs: 5_000 }).catch(() => undefined)
-  return probed?.exitCode === 0 ? "●" : "○"
+  return (await checkEngine($, engine)) === "ok" ? "●" : "○"
 }
 
 /** One line of `/tts engine`: whether the engine answers now, where, and its role. */
@@ -512,10 +549,6 @@ async function openPicker($: EngineInterface, shown: Picker): Promise<boolean> {
   return opened.isPlaced
 }
 
-/** A choice as a text listing shows it: its id, then its name where it has one. */
-function optionLine(option: PickerOption): string {
-  return option.label === undefined ? `  ${option.value}` : `  ${option.value}: ${option.label}`
-}
 
 /**
  * Saves a change, to `/config` (which reloads the module) or to this

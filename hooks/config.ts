@@ -51,7 +51,7 @@ export function toConfig(options: PluginOptions): TtsConfig {
   return {
     isEnabled: options.enabled !== false,
     mode: options.mode as ReadMode,
-    engine: engine in ENGINES ? (engine as EngineName) : "irodori",
+    engine: engine in ENGINES ? (engine as EngineName) : "voicevox",
     fallback: fallback in ENGINES && fallback !== engine ? (fallback as EngineName) : undefined,
     player: String(options.player),
     volume: Number(options.volume),
