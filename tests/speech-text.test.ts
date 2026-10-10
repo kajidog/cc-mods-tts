@@ -98,6 +98,12 @@ test("toSpeakable removes brackets but preserves their contents and meaningful s
   expect(toSpeakable("-1 と 1.5、C++、C#、--help、A-B。大丈夫？")).toBe("-1 と 1.5、C++、C#、--help、A-B。大丈夫？")
 })
 
+test("toSpeakable never reads part of a relative path whose first folder has a space", async () => {
+  expect(toSpeakable("My Project/src/main.ts:10 を直した")).toBe("My Project/src/main.ts:10 を直した")
+  expect(toSpeakable("`My Project/src/main.ts:10` を直した")).toBe("My Project/src/main.ts:10 を直した")
+  expect(toSpeakable("を修正 hooks/foo.ts:10")).toBe("を修正 foo.tsの10行目")
+})
+
 test("toSpeakable leaves slashes that are not clearly paths", async () => {
   for (const text of ["and/or", "1/2 と 2026/10/10", "v1.2/v1.3", "React/Next.js で作る", "TCP/IP", "e.g./i.e.", "example.com:8080/api/user.json"]) {
     expect(toSpeakable(text)).toBe(text)

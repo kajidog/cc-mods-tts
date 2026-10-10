@@ -100,10 +100,25 @@ export function toSpeakable(line: string): string {
  * Reads a path as its file name and line: "speech-text.tsの12行目". Only
  * paths that are clearly paths are shortened: rooted (`/`, `~/`, `./`, `C:\\`),
  * with a line, or a whole inline code span. A bare `React/Next.js` stays.
+ * An unrooted path right after a word and a space may be the tail of one
+ * whose first folder has a space (`My Project/src/a.ts`), so it stays whole.
  */
-function speakPath(match: string, open: string, root: string | undefined, dirs: string, name: string, line?: string, end?: string, close?: string): string {
+function speakPath(
+  match: string,
+  open: string,
+  root: string | undefined,
+  dirs: string,
+  name: string,
+  line: string | undefined,
+  end: string | undefined,
+  close: string,
+  offset: number,
+  text: string,
+): string {
   const code = open !== "" && close !== ""
-  if (!(code || line !== undefined || root !== undefined || /^\.{0,2}[/\\]/.test(dirs))) return match
+  const isRooted = root !== undefined || /^\.{0,2}[/\\]/.test(dirs)
+  if (!(code || line !== undefined || isRooted)) return match
+  if (!isRooted && /[A-Za-z0-9] $/.test(text.slice(0, offset))) return match
   const spoken = line === undefined ? name : end === undefined ? `${name}の${line}行目` : `${name}の${line}から${end}行目`
   return code ? spoken : `${open}${spoken}${close}`
 }
