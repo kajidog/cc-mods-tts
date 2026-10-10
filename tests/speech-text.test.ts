@@ -90,7 +90,7 @@ test("toSpeakable shortens Unicode paths and directories containing spaces", asy
   expect(toSpeakable("/home/me/日本語/src/main.ts:10 を修正。")).toBe("main.tsの10行目 を修正。")
   expect(toSpeakable("`C:\\Users\\me\\My Project\\src\\main.ts:10` を修正。")).toBe("main.tsの10行目 を修正。")
   expect(toSpeakable("./docs/日本語.md:10 を参照。")).toBe("日本語.mdの10行目 を参照。")
-  expect(toSpeakable("参照 /home/me/My Project/資料.md:10 を確認。")).toBe("参照 資料.mdの10行目 を確認。")
+  expect(toSpeakable("参照 `/home/me/My Project/資料.md:10` を確認。")).toBe("参照 資料.mdの10行目 を確認。")
 })
 
 test("toSpeakable removes brackets but preserves their contents and meaningful symbols", async () => {
@@ -101,7 +101,15 @@ test("toSpeakable removes brackets but preserves their contents and meaningful s
 test("toSpeakable never reads part of a relative path whose first folder has a space", async () => {
   expect(toSpeakable("My Project/src/main.ts:10 を直した")).toBe("My Project/src/main.ts:10 を直した")
   expect(toSpeakable("`My Project/src/main.ts:10` を直した")).toBe("My Project/src/main.ts:10 を直した")
-  expect(toSpeakable("を修正 hooks/foo.ts:10")).toBe("を修正 foo.tsの10行目")
+  expect(toSpeakable("マイ プロジェクト/src/main.ts:10 を直した")).toBe("マイ プロジェクト/src/main.ts:10 を直した")
+  expect(toSpeakable("`cat src/main.ts` を実行")).toBe("cat src/main.ts を実行")
+  expect(toSpeakable("修正箇所は `hooks/foo.ts:10` です")).toBe("修正箇所は foo.tsの10行目 です")
+})
+
+test("toSpeakable never reads a path across prose", async () => {
+  expect(toSpeakable("/tmp/a.ts and src/b.ts:10")).toBe("a.ts and src/b.ts:10")
+  expect(toSpeakable("/home/me/repo と src/b.ts:10 を見た")).toBe("/home/me/repo と src/b.ts:10 を見た")
+  expect(toSpeakable("参照 /home/me/My Project/資料.md:10 を確認。")).toBe("参照 /home/me/My Project/資料.md:10 を確認。")
 })
 
 test("toSpeakable leaves slashes that are not clearly paths", async () => {

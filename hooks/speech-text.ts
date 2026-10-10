@@ -3,14 +3,20 @@ const TERMINATOR = /[。！？!?]+[」』）)"]*|\.(?=\s)/g
 const SPEAKABLE = /[\p{L}\p{N}]/u
 const MAX_SENTENCE = 160
 const LIST_MARKER = /^\s*(?:[-*+–—•]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/
+const PATH_NAME = String.raw`[\p{L}\p{N}\p{M}_@+-][\p{L}\p{N}\p{M}_.@+-]*\.[A-Za-z][A-Za-z0-9]{0,9}`
+const PATH_LINE = String.raw`(?:(?::|#L)(\d+)(?:-L?(\d+))?(?::\d+)?)?`
 /**
  * A file path, optionally in backticks and with a line (`:12`, `:12:5`,
  * `:12-20`, `#L12-L20`). Folders need a separator and the name an extension
  * that starts with a letter, so `and/or`, `1/2` and `v1.2/v1.3` never match.
- * The first directory has no spaces, so prose before a path is not consumed.
+ * Folders have no spaces, so a match never runs across prose.
  */
-const PATH =
-  /(?<![\p{L}\p{N}\p{M}_.:/\\~-])(`?)(~|[A-Za-z]:)?([\p{L}\p{N}\p{M}_.@+-]*[/\\](?:[\p{L}\p{N}\p{M}_.@+ -]*[/\\])*)([\p{L}\p{N}\p{M}_@+-][\p{L}\p{N}\p{M}_.@+-]*\.[A-Za-z][A-Za-z0-9]{0,9})(?:(?::|#L)(\d+)(?:-L?(\d+))?(?::\d+)?)?(`?)(?![\p{L}\p{N}\p{M}_/\\])/gu
+const PATH = new RegExp(
+  String.raw`(?<![\p{L}\p{N}\p{M}_.:/\\~-])(\x60?)(~|[A-Za-z]:)?((?:[\p{L}\p{N}\p{M}_.@+-]*[/\\])+)(${PATH_NAME})${PATH_LINE}(\x60?)(?![\p{L}\p{N}\p{M}_/\\])`,
+  "gu",
+)
+/** A whole inline code span that is a path; only there, its folders may have spaces. */
+const CODE_PATH = new RegExp(String.raw`^(~|[A-Za-z]:)?((?:[\p{L}\p{N}\p{M}_.@+ -]*[/\\])+)(${PATH_NAME})${PATH_LINE}$`, "u")
 
 /**
  * Turns streamed Markdown into speakable sentences as early as possible:
@@ -88,6 +94,7 @@ export function toSpeakable(line: string): string {
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, "URL")
+    .replace(/`([^`]+)`/g, speakCodePath)
     .replace(PATH, speakPath)
     .replace(/`([^`]*)`/g, "$1")
     .replace(/\*\*|~~|(?<!\w)\*(?!\s)|(?<!\s)\*(?!\w)/g, "")
@@ -96,12 +103,33 @@ export function toSpeakable(line: string): string {
     .trim()
 }
 
+/** Reads a path as its file name and line: "speech-text.tsの12行目". */
+function spokenPath(name: string, line: string | undefined, end: string | undefined): string {
+  return line === undefined ? name : end === undefined ? `${name}の${line}行目` : `${name}の${line}から${end}行目`
+}
+
+function isRootedPath(root: string | undefined, dirs: string): boolean {
+  return root !== undefined || /^\.{0,2}[/\\]/.test(dirs)
+}
+
 /**
- * Reads a path as its file name and line: "speech-text.tsの12行目". Only
- * paths that are clearly paths are shortened: rooted (`/`, `~/`, `./`, `C:\\`),
- * with a line, or a whole inline code span. A bare `React/Next.js` stays.
- * An unrooted path right after a word and a space may be the tail of one
- * whose first folder has a space (`My Project/src/a.ts`), so it stays whole.
+ * Shortens a code span that is a path with spaces in its folders, when it is
+ * rooted: `cat src/a.ts` or `My Project/src/a.ts` could be a command or a
+ * folder, so they stay whole.
+ */
+function speakCodePath(span: string, inner: string): string {
+  const match = CODE_PATH.exec(inner)
+  if (match === null) return span
+  const [, root, dirs = "", name = "", line, end] = match
+  return isRootedPath(root, dirs) ? spokenPath(name, line, end) : span
+}
+
+/**
+ * Shortens a path without spaces, only when it is clearly a path: rooted
+ * (`/`, `~/`, `./`, `C:\\`), with a line, or a whole inline code span. A
+ * bare `React/Next.js` stays. An unrooted path right after a word and a
+ * space may be the tail of one whose first folder has a space
+ * (`My Project/src/a.ts`), so it stays whole.
  */
 function speakPath(
   match: string,
@@ -116,10 +144,10 @@ function speakPath(
   text: string,
 ): string {
   const code = open !== "" && close !== ""
-  const isRooted = root !== undefined || /^\.{0,2}[/\\]/.test(dirs)
+  const isRooted = isRootedPath(root, dirs)
   if (!(code || line !== undefined || isRooted)) return match
-  if (!isRooted && /[A-Za-z0-9] $/.test(text.slice(0, offset))) return match
-  const spoken = line === undefined ? name : end === undefined ? `${name}の${line}行目` : `${name}の${line}から${end}行目`
+  if (!isRooted && open === "" && /[\p{L}\p{N}\p{M}] $/u.test(text.slice(0, offset))) return match
+  const spoken = spokenPath(name, line, end)
   return code ? spoken : `${open}${spoken}${close}`
 }
 
