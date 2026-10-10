@@ -49,6 +49,21 @@ claude --plugin-dir ~/cc-mods-tts
 
 対応する音声形式やアップロード API など、詳しくは[公式の音声追加・管理手順（Voice Management）](https://github.com/Aratako/Irodori-TTS-Server#voice-management)を参照してください。
 
+### アンインストール
+
+A で入れた場合:
+
+```sh
+claude plugin uninstall tts@cc-mods-tts
+claude plugin marketplace remove cc-mods-tts   # マーケットプレイスも消すなら
+```
+
+起動中のセッションには `/reload-plugins` で反映されます。
+
+B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUGIN_DIRS` を settings.json から消して、クローンしたフォルダを削除します。
+
+どちらの場合も、`/config` で変えた設定は `~/.claude/settings.json` の `pluginConfigs` に残ります（A は `tts@cc-mods-tts`、B は `tts@inline` のキー）。不要なら手で消してください。
+
 ## 使い方
 
 | コマンド | 内容 |
@@ -96,7 +111,7 @@ claude --plugin-dir ~/cc-mods-tts
 | Enabled（`enabled`） | 読み上げる / 読み上げない | true |
 | Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
 | TTS engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
-| Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。切り替わったときはトーストで一度知らせる | none |
+| Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
 | Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1 |
 | Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
 | Player（`player`） | 再生コマンド。`auto` は ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |

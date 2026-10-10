@@ -99,6 +99,10 @@ export const register: Register = (on, options) => {
   const cachedNotices = new Map<string, string>()
   let directory = ""
   let noticeCount = 0
+  // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
+  let engineIssue: string | undefined
+  // Set by session.start: probes the engine in use and shows the result.
+  let recheckEngine = () => {}
 
   /** Rebuilds the engines from the options with this directory's pin laid over them. */
   const applyPins = (stored: Pins) => {
@@ -109,6 +113,7 @@ export const register: Register = (on, options) => {
     fallback = config.fallback === undefined ? undefined : ENGINES[config.fallback].load(effective)
     // Cached notices were spoken in the voice before.
     cachedNotices.clear()
+    recheckEngine()
   }
 
   /** What saving `value` for `setting` changes; while pinned, engine and voice go to the pin. */
@@ -194,19 +199,22 @@ export const register: Register = (on, options) => {
     let clipCount = 0
     let lastErrorAt = 0
 
-    // Either loop may finish the last item, a dropped one included.
-    const clearStatusWhenIdle = () => {
-      if (!isSynthesizing && !playbackProcess.isRunning && sentences.size === 0 && clips.size === 0) $.ui.status(undefined)
+    const noteEngine = (error?: unknown) => {
+      const issue = error === undefined ? undefined : `${config.engine} ${/is not set/.test(String(error)) ? "unset" : "down"}`
+      showEngineIssue(issue)
     }
-    // A reload kills the player mid-clip, leaving the last module's status behind.
+    // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
+    const showEngineIssue = (issue: string | undefined) => {
+      if (issue === engineIssue) return
+      engineIssue = issue
+      $.ui.status(issue)
+    }
+    // The last module's line stays after a reload.
     $.ui.status(undefined)
 
-    // The fallback reads on quietly: one toast a burst says the engine is failing.
-    let lastFallbackAt = 0
+    // The fallback reads on quietly: the status line says the engine is failing.
     const reportFallback = (error: unknown) => {
       $.ui.log(`tts: ${config.engine} failed, read with ${config.fallback}: ${String(error)}`, { to: "debug" })
-      if (Date.now() - lastFallbackAt > 30_000) $.ui.toast(`tts: ${config.engine} failed; reading with ${config.fallback}`)
-      lastFallbackAt = Date.now()
     }
 
     const reportError = (error: unknown) => {
@@ -221,18 +229,19 @@ export const register: Register = (on, options) => {
     void (async () => {
       for (;;) {
         const sentence = await sentences.take()
-        if (sentence.generation !== generation) {
-          clearStatusWhenIdle()
-          continue
-        }
+        if (sentence.generation !== generation) continue
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => sentence.generation === generation
         isSynthesizing = true
+        let isFallback = false
         try {
           try {
             await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
+            if (isCurrent()) noteEngine()
           } catch (error) {
-            if (!isCurrent() || fallback === undefined) throw error
+            if (isCurrent()) noteEngine(error)
+            if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
+            isFallback = true
             await synthesize($, synthesisProcess, fallback, sentence.text, file, isCurrent)
             reportFallback(error)
           }
@@ -246,14 +255,15 @@ export const register: Register = (on, options) => {
             await $.process.run(["rm", "-f", file, `${file}.t.wav`])
             continue
           }
-          if (sentence.cacheAs !== undefined) cachedNotices.set(sentence.text, file)
-          clips.push({ file, generation: sentence.generation, isCached: sentence.cacheAs !== undefined })
+          // A notice the fallback read is kept for this time only: the engine may be back next time.
+          const isCached = sentence.cacheAs !== undefined && !isFallback
+          if (isCached) cachedNotices.set(sentence.text, file)
+          clips.push({ file, generation: sentence.generation, isCached })
         } catch (error) {
           await $.process.run(["rm", "-f", file])
           if (isCurrent()) reportError(error)
         } finally {
           isSynthesizing = false
-          clearStatusWhenIdle()
         }
       }
     })()
@@ -262,7 +272,6 @@ export const register: Register = (on, options) => {
       for (;;) {
         const clip = await clips.take()
         if (clip.generation === generation && player !== undefined) {
-          $.ui.status(`🔊 ${config.engine}`)
           try {
             await playbackProcess.read($.process.spawn({ argv: playCommand(player, clip.file, config.volume) }))
           } catch (error) {
@@ -272,9 +281,18 @@ export const register: Register = (on, options) => {
         const files = [`${clip.file}.v.wav`]
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(["rm", "-f", ...files])
-        clearStatusWhenIdle()
       }
     })()
+
+    // Checked at once, so a start or an engine switch shows a dead engine before anything is read.
+    recheckEngine = () => {
+      showEngineIssue(undefined)
+      const checked = engine
+      void checkEngine($, checked).then(state => {
+        if (checked === engine && state !== "ok") showEngineIssue(`${config.engine} ${state}`)
+      })
+    }
+    recheckEngine()
 
     await $.command.register({
       name: "tts",
@@ -556,11 +574,21 @@ async function runProcess($: EngineInterface, process: SpeechProcess, argv: stri
   }
 }
 
+/** Whether the engine can read now: set up (its synthesis builds) and answering its probe. */
+async function checkEngine($: EngineInterface, engine: LoadedEngine): Promise<"ok" | "down" | "unset"> {
+  if (engine.probe === undefined) return "unset"
+  try {
+    engine.synthesis("", "/dev/null")
+  } catch {
+    return "unset"
+  }
+  const probed = await $.process.run(engine.probe, { timeoutMs: 5_000 }).catch(() => undefined)
+  return probed?.exitCode === 0 ? "ok" : "down"
+}
+
 /** ● when the engine answers now, ○ when it is down or not set up. */
 async function answerMark($: EngineInterface, engine: LoadedEngine): Promise<string> {
-  if (engine.probe === undefined) return "○"
-  const probed = await $.process.run(engine.probe, { timeoutMs: 5_000 }).catch(() => undefined)
-  return probed?.exitCode === 0 ? "●" : "○"
+  return (await checkEngine($, engine)) === "ok" ? "●" : "○"
 }
 
 /** One line of `/tts engine`: whether the engine answers now, where, and its role. */

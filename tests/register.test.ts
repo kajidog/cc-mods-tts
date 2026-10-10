@@ -13,7 +13,6 @@ function host(on: On, blockedInput?: string) {
   const commands: string[][] = []
   const processes: ProcessSpawnRequest[] = []
   let directories = 0
-  let onIdle: (() => void) | undefined
   let onStarted: () => void = () => {}
   const started = new Promise<void>(resolve => { onStarted = resolve })
   const cancelled: string[] = []
@@ -22,10 +21,7 @@ function host(on: On, blockedInput?: string) {
   on("session.end", (_, e) => ({ sessionId: e.sessionId }))
   on("store.get", () => ({ value: undefined }))
   on("command.register", () => ({ value: { command: "tts" } }))
-  on("ui.status", (_, e) => {
-    if (e.text === undefined) onIdle?.()
-    return { value: undefined }
-  })
+  on("ui.status", () => ({ value: undefined }))
   on("ui.toast", () => ({ value: undefined }))
   on("ui.log", () => ({ value: undefined }))
   on("turn.start", (_, e) => ({ turnId: e.turnId }))
@@ -47,7 +43,13 @@ function host(on: On, blockedInput?: string) {
   })
   return {
     commands, processes, started, cancelled,
-    idle: () => new Promise<void>(resolve => { onIdle = resolve }),
+    /** Waits until synthesis and playback stop asking the host for anything. */
+    idle: async () => {
+      for (let seen = -1; seen !== commands.length + processes.length;) {
+        seen = commands.length + processes.length
+        await settle()
+      }
+    },
     spoken: () => processes.filter(e => e.argv[0] === "synth").map(e => e.input),
   }
 }
@@ -65,19 +67,17 @@ test("stop mutes later stream chunks and later steps until the next turn", { opt
     return { ...stepResult, turnId: e.turnId, index: e.index }
   })
   await $.session.start(start)
-  const firstIdle = observed.idle()
   const stream = $.turn.step(step)
   await stream.next()
-  await firstIdle
+  await observed.idle()
   await $.command.run(command("stop"))
   for await (const _ of stream) { /* Finish the response after stop. */ }
   for await (const _ of $.turn.step({ ...step, index: 1 })) { /* Another step in the same turn. */ }
   await settle()
   expect(observed.spoken()).toEqual(["一文目。"])
-  const nextIdle = observed.idle()
   await $.turn.start({ text: "next", turnId: "next" })
   for await (const _ of $.turn.step({ ...step, turnId: "next" })) { /* Speech resumes. */ }
-  await nextIdle
+  await observed.idle()
   await settle()
   expect(observed.spoken()).toEqual(["一文目。", "一文目。", "二文目。"])
 })
@@ -90,9 +90,8 @@ test("stop cancels an in-flight synthesis without falling back and frees the que
   await $.command.run(command("test blocked"))
   await observed.started
   await $.command.run(command("stop"))
-  const idle = observed.idle()
   await $.command.run(command("test fresh"))
-  await idle
+  await observed.idle()
   await settle()
   expect(observed.cancelled).toEqual(["blocked"])
   expect(observed.spoken()).toEqual(["blocked", "fresh"])
@@ -102,9 +101,8 @@ test("stop cancels an in-flight synthesis without falling back and frees the que
 test("the response budget caps actual characters and adds one cut notice", { options: { ...options, mode: "final" } }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)
-  const idle = observed.idle()
   await $.turn.complete(completed("あ".repeat(800)))
-  await idle
+  await observed.idle()
   await settle()
   const spoken = observed.spoken()
   expect(spoken.at(-1)).toBe("以下、省略します。")
@@ -116,9 +114,8 @@ test("clear cleans the directory and allows speech in a fresh private directory"
   await $.session.start(start)
   await $.session.end({ reason: "clear", sessionId: "session", resume: { id: "session" } })
   expect(observed.commands).toContainEqual(["rm", "-rf", "--", "/tmp/claude-tts-test1"])
-  const idle = observed.idle()
   await $.command.run(command("test 再開。"))
-  await idle
+  await observed.idle()
   await settle()
   expect(observed.processes[0]?.argv[1]).toBe("/tmp/claude-tts-test2/000000.wav")
 })
