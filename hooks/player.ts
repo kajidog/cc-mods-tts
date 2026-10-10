@@ -1,5 +1,7 @@
 import { powershellCommand, quotePowerShell } from "./platform"
 
+const TAIL_PADDING_SECONDS = 0.2
+
 /** Prints the first audio player found on this machine. */
 export function findPlayerCommand(isWindows: boolean): string[] {
   if (isWindows) return powershellCommand("if (Get-Command ffplay -CommandType Application -ErrorAction SilentlyContinue) { 'ffplay' } else { 'powershell' }")
@@ -12,13 +14,14 @@ export function findPlayerCommand(isWindows: boolean): string[] {
 }
 
 /**
- * Cuts the silence engines leave around speech (Irodori: about 0.5 s before
- * and 1 s after), keeping a short pause so sentences do not run together.
+ * Cuts long engine pauses, then gives ffplay and SoundPlayer time to finish speech.
+ * Padding must be in the WAV: ffplay does not flush an apad filter at EOF.
  * Leaves the file as it was where ffmpeg is missing.
  */
-export function trimCommand(file: string, isWindows = false): string[] {
+export function prepareAudioCommand(file: string, player: string | undefined, isWindows = false): string[] {
   const edge = (keep: number) => `silenceremove=start_periods=1:start_threshold=-45dB:start_silence=${keep}`
-  const filter = `${edge(0.05)},areverse,${edge(0.2)},areverse`
+  const padding = player === "ffplay" || player === "powershell" ? `,apad=pad_dur=${TAIL_PADDING_SECONDS}` : ""
+  const filter = `${edge(0.05)},areverse,${edge(0.2)},areverse${padding}`
   if (isWindows) return powershellCommand([
     "if (-not (Get-Command ffmpeg -CommandType Application -ErrorAction SilentlyContinue)) { exit 0 }",
     `$file = ${quotePowerShell(file)}`,

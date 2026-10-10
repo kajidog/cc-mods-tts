@@ -65,6 +65,46 @@ async function settle() {
   for (let i = 0; i < 200; i++) await Promise.resolve()
 }
 
+for (const [count, surface] of [[64, "terminal"], [65, "terminal"], [127, "terminal"], [129, "terminal"], [127, "desktop"]] as const) {
+  test(`VOICEVOX picker reaches all ${count} styles on ${surface} and saves a selection`, { options: { engine: "voicevox", voicevoxSpeaker: count - 1 } }, async ($, on) => {
+    host(on)
+    const saved: unknown[] = []
+    on("http.fetch", () => ({ value: { status: 200, ok: true, headers: {}, text: JSON.stringify([
+      { name: "テスト話者", styles: Array.from({ length: count }, (_, id) => ({ id, name: `スタイル${id}` })) },
+    ]) } }))
+    on("ui.open", () => ({ value: { isPlaced: true } }))
+    on("ui.close", () => ({ value: undefined }))
+    on("config.set", (_, e) => {
+      saved.push({ key: e.key, value: e.value })
+      return { value: e.value }
+    })
+    await $.session.start(start)
+    expect((await $.command.run(command("voice"))).text).toBe("pick a voice in the pane (Esc closes it)")
+    const ui = await $.ui.mount({
+      plugin: "tts", surface, component: "Pane", requestId: "tts-picker",
+      props: { title: "tts voice", isFocused: true, bodyColumns: 80, placement: "inline", scroll: { offset: 0, bodyRows: 14 }, view: {} },
+    })
+    expect((await ui.find({ type: "Select" }))?.props.value).toBe(String(count - 1))
+    expect(await ui.find({ key: "next-page" })).toBeUndefined()
+    const pages = Math.ceil(count / 64)
+    for (let page = pages - 1; page > 0; page--) await ui.press({ key: "previous-page" })
+    expect(await ui.find({ key: "previous-page" })).toBeUndefined()
+    const reached: unknown[] = []
+    for (let page = 0; page < pages; page++) {
+      const select = await ui.find({ type: "Select" })
+      const choices = select?.props.options as { value: string }[]
+      expect(choices.length <= 64).toBe(true)
+      reached.push(...choices.map(option => option.value))
+      if (page + 1 < pages) await ui.press({ key: "next-page" })
+    }
+    expect(reached).toEqual(Array.from({ length: count }, (_, id) => String(id)))
+    for (let page = pages - 1; page > 0; page--) await ui.press({ key: "previous-page" })
+    await ui.select({ key: "voice-0", value: "0" })
+    expect(saved).toEqual([{ key: "tts.voicevoxSpeaker", value: 0 }])
+    await ui.unmount()
+  })
+}
+
 test("stop mutes later stream chunks and later steps until the next turn", { options }, async ($, on) => {
   const observed = host(on)
   on("turn.step", async function* (_, e) {

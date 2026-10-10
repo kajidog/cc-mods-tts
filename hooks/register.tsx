@@ -9,7 +9,7 @@ import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from "./platform"
-import { findPlayerCommand, playCommand, trimCommand } from "./player"
+import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
 import { SpeechSplitter, toSentences } from "./speech-text"
@@ -31,6 +31,8 @@ const HELP = [
 /** Which notice notify mode says as a turn ends; an interrupted turn stays silent. */
 const TURN_NOTICES: Partial<Record<string, keyof Notices>> = { answer: "done", error: "error", refusal: "refusal" }
 const PICKER_PANE = "tts-picker"
+// Claude Code refuses a Select with more than 64 options.
+const PICKER_PAGE_SIZE = 64
 const picker = atom({ plugin: "tts", key: "picker" } as const, null as Picker | null)
 // Survives a reload so the next module can remove the old module's audio files.
 const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, null as string | null)
@@ -182,7 +184,7 @@ export const register: Register = (on, options) => {
             continue
           }
           // Done while the clip before plays; an untrimmed clip still plays.
-          await runProcess($, synthesisProcess, trimCommand(file, isWindows), undefined, 30_000).catch(() => undefined)
+          await runProcess($, synthesisProcess, prepareAudioCommand(file, player, isWindows), undefined, 30_000).catch(() => undefined)
           if (!isCurrent()) {
             await $.process.run(removeFilesCommand([file, `${file}.t.wav`], isWindows))
             continue
@@ -377,14 +379,25 @@ export const register: Register = (on, options) => {
       const { Text } = $.ui.resolve(e)
       return <Text dimColor>{shown === null || shown.options.length === 0 ? "Nothing to pick." : shown.options.map(optionLine).join("\n")}</Text>
     }
-    const { Box, Text, Select } = $.ui.resolve(e)
+    const { Box, Text, Select, Button } = $.ui.resolve(e)
+    const page = shown.page ?? Math.floor(Math.max(0, shown.options.findIndex(option => option.value === shown.value)) / PICKER_PAGE_SIZE)
+    const pages = Math.ceil(shown.options.length / PICKER_PAGE_SIZE)
+    const choices = shown.options.slice(page * PICKER_PAGE_SIZE, (page + 1) * PICKER_PAGE_SIZE)
+    const turnPage = (page: number) => update($, picker, () => ({ ...shown, page }))
     return (
       <Box flexDirection="column">
         <Text dimColor>{`${shown.title}: ↑↓ move, Enter picks, Esc closes`}</Text>
+        {pages > 1 && (
+          <Box>
+            {page > 0 && <Button key="previous-page" hotkey="p" onPress={() => turnPage(page - 1)}>Previous</Button>}
+            <Text dimColor>{` Page ${page + 1}/${pages} `}</Text>
+            {page + 1 < pages && <Button key="next-page" hotkey="n" onPress={() => turnPage(page + 1)}>Next</Button>}
+          </Box>
+        )}
         <Select
-          key={shown.setting}
-          options={shown.options.map(option => ({ value: option.value, label: option.label ?? option.value }))}
-          value={shown.value}
+          key={`${shown.setting}-${page}`}
+          options={choices.map(option => ({ value: option.value, label: option.label ?? option.value }))}
+          value={choices.some(option => option.value === shown.value) ? shown.value : undefined}
           autoFocus
           onSelect={async value => {
             await $.ui.close({ id: PICKER_PANE })

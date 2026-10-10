@@ -1,6 +1,6 @@
 import { expect, test } from "claude-code/testing"
 
-import { findPlayerCommand, playCommand, trimCommand } from "../hooks/player"
+import { findPlayerCommand, playCommand, prepareAudioCommand } from "../hooks/player"
 
 const script = (player: string, volume: number) => playCommand(player, "/tmp/a.wav", volume)[2] ?? ""
 
@@ -16,6 +16,19 @@ test("scales volume in the player, or with ffmpeg where the player cannot", asyn
   expect(script("aplay", 0.5)).toContain('-af volume=0.5 "$1.v.wav"')
 })
 
+test("pads ffplay and PowerShell WAVs after trimming on both platforms", async () => {
+  for (const isWindows of [false, true]) {
+    for (const player of ["ffplay", "powershell"]) {
+      const prepare = prepareAudioCommand("speech.wav", player, isWindows).join(" ")
+      expect(prepare).toContain("start_silence=0.2,areverse,apad=pad_dur=0.2")
+      expect(playCommand(player, "speech.wav", 0.5, isWindows).join(" ")).not.toContain("apad")
+    }
+    for (const player of ["aplay", "paplay", "afplay", undefined]) {
+      expect(prepareAudioCommand("speech.wav", player, isWindows).join(" ")).not.toContain("apad")
+    }
+  }
+})
+
 test("native Windows plays literal paths without a Unix shell or WSL path conversion", async () => {
   const file = "C:\\Users\\O'Brien 日本語\\a [1].wav"
   const command = playCommand("powershell", file, 0.5, true)
@@ -25,12 +38,12 @@ test("native Windows plays literal paths without a Unix shell or WSL path conver
   expect(command.at(-1)).not.toContain("wslpath")
   expect(playCommand("ffplay", file, 1, true).at(-1)).toBe(file)
   expect(findPlayerCommand(true).at(-1)).not.toContain("paplay")
-  expect(trimCommand(file, true).at(-1)).toContain("Move-Item -LiteralPath")
+  expect(prepareAudioCommand(file, "powershell", true).at(-1)).toContain("Move-Item -LiteralPath")
   expect(script("powershell", 1)).toContain("wslpath")
 })
 
 test("trims the silence around speech in place, keeping a short pause", async () => {
-  const [, , script, , file] = trimCommand("/tmp/a.wav")
+  const [, , script, , file] = prepareAudioCommand("/tmp/a.wav", "aplay")
   expect(file).toBe("/tmp/a.wav")
   expect(script).toContain("start_silence=0.05,areverse")
   expect(script).toContain('mv -f "$1.t.wav" "$1"')

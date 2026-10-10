@@ -5,7 +5,14 @@ export type PickerOption = { value: string; label?: string }
 export type Setting = "mode" | "engine" | "voice" | "speed" | "volume"
 
 /** What the picker pane offers: the setting a pick saves, its choices, the one in use. */
-export type Picker = { setting: Setting; title: string; options: PickerOption[]; value: string }
+export type Picker = {
+  setting: Setting
+  title: string
+  options: PickerOption[]
+  value: string
+  /** Omitted when opened: start on the page containing the current value. */
+  page?: number
+}
 
 declare module "claude-code" {
   interface PluginState {
