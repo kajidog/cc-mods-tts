@@ -15,6 +15,10 @@ const PATH = new RegExp(
   String.raw`(?<![\p{L}\p{N}\p{M}_.:/\\~-])(\x60?)(~|[A-Za-z]:)?((?:[\p{L}\p{N}\p{M}_.@+-]*[/\\])+)(${PATH_NAME})${PATH_LINE}(\x60?)(?![\p{L}\p{N}\p{M}_/\\])`,
   "gu",
 )
+/** Ends what came before, so a path may follow at once: Japanese punctuation and brackets. */
+const PATH_SEPARATORS = /[\s、。，：；（［｛〈《「『【]/
+/** May open a path when they start a word: ASCII brackets and quotes. */
+const PATH_OPENERS = /[([{<"'\x60]/
 /** A whole inline code span that is a path; only there, its folders may have spaces. */
 const CODE_PATH = new RegExp(String.raw`^(~|[A-Za-z]:)?((?:[\p{L}\p{N}\p{M}_.@+ -]*[/\\])+)(${PATH_NAME})${PATH_LINE}$`, "u")
 
@@ -108,6 +112,15 @@ function spokenPath(name: string, line: string | undefined, end: string | undefi
   return line === undefined ? name : end === undefined ? `${name}の${line}行目` : `${name}の${line}から${end}行目`
 }
 
+/** Whether a path may start right after `before`, not in the middle of a longer one. */
+function startsPath(before: string): boolean {
+  const last = before.at(-1)
+  if (last === undefined || PATH_SEPARATORS.test(last)) return true
+  if (!PATH_OPENERS.test(last)) return false
+  const prior = before.at(-2)
+  return prior === undefined || !/[\x21-\x7e]/.test(prior)
+}
+
 function isRootedPath(root: string | undefined, dirs: string): boolean {
   return root !== undefined || /^\.{0,2}[/\\]/.test(dirs)
 }
@@ -127,9 +140,9 @@ function speakCodePath(span: string, inner: string): string {
 /**
  * Shortens a path without spaces, only when it is clearly a path: rooted
  * (`/`, `~/`, `./`, `C:\\`), with a line, or a whole inline code span. A
- * bare `React/Next.js` stays. An unrooted path right after a word and a
- * space may be the tail of one whose first folder has a space
- * (`My Project/src/a.ts`), so it stays whole.
+ * bare `React/Next.js` stays. A path joined to the text before it, or an
+ * unrooted one right after a word and a space, may be the tail of a longer
+ * path (`/tmp/foo&bar/a.ts`, `My Project/src/a.ts`), so it stays whole.
  */
 function speakPath(
   match: string,
@@ -146,7 +159,12 @@ function speakPath(
   const code = open !== "" && close !== ""
   const isRooted = isRootedPath(root, dirs)
   if (!(code || line !== undefined || isRooted)) return match
-  if (!isRooted && open === "" && /[\p{L}\p{N}\p{M}] $/u.test(text.slice(0, offset))) return match
+  if (open === "") {
+    const before = text.slice(0, offset)
+    // Text joined to the match (`foo&` in `/tmp/foo&bar/a.ts`) means it is the tail of a longer path.
+    if (!startsPath(before)) return match
+    if (!isRooted && /[\p{L}\p{N}\p{M}] $/u.test(before)) return match
+  }
   const spoken = spokenPath(name, line, end)
   return code ? spoken : `${open}${spoken}${close}`
 }

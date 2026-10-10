@@ -106,6 +106,13 @@ test("toSpeakable never reads part of a relative path whose first folder has a s
   expect(toSpeakable("修正箇所は `hooks/foo.ts:10` です")).toBe("修正箇所は foo.tsの10行目 です")
 })
 
+test("toSpeakable never reads the tail of a path with other characters in it", async () => {
+  expect(toSpeakable("`/tmp/foo&bar/src/main.ts:10` を直した")).toBe("/tmp/foo&bar/src/main.ts:10 を直した")
+  expect(toSpeakable("/tmp/foo&bar/src/main.ts:10 を直した")).toBe("/tmp/foo&bar/src/main.ts:10 を直した")
+  expect(toSpeakable("/tmp/foo(1/src/main.ts:10")).toBe("/tmp/foo 1/src/main.ts:10")
+  expect(toSpeakable("修正（src/main.ts:10）と「/tmp/a.ts」")).toBe("修正 main.tsの10行目 と a.ts")
+})
+
 test("toSpeakable never reads a path across prose", async () => {
   expect(toSpeakable("/tmp/a.ts and src/b.ts:10")).toBe("a.ts and src/b.ts:10")
   expect(toSpeakable("/home/me/repo と src/b.ts:10 を見た")).toBe("/home/me/repo と src/b.ts:10 を見た")
