@@ -181,6 +181,27 @@ CI（`.github/workflows/ci.yml`）は main への push と PR で lint を実行
 
 API は early access のため、Claude Code の更新で変わることがある（CI で確認しているバージョン: 2.1.296）。
 
+### 変更履歴とリリース
+
+変更履歴は [CHANGELOG.md](CHANGELOG.md) にまとめています。[Changesets](https://changesets.dev/) で変更メモを集め、GitHub Actions がリリース用 PR を作成・更新します。
+
+開発時は Node.js 22.11 以降の 22 系、24 系、または 26 以降と、npm 10.9 以降を使います。
+
+```sh
+npm ci
+npm run changeset
+```
+
+`patch`（修正）・`minor`（機能追加）・`major`（互換性のない変更）を選び、変更内容を日本語で入力します。生成された `.changeset/*.md` をコードと一緒にコミットしてください。ドキュメントや CI だけの変更ではメモは不要です。
+
+1. 変更メモを含む PR を main にマージする。
+2. Actions が `chore: release tts` という PR を作成・更新する。CHANGELOG への追記と、`package.json`・`package-lock.json`・`.claude-plugin/plugin.json` のバージョン更新がまとまります。
+3. 内容を確認してリリース用 PR をマージする。利用者は `claude plugin update tts` と `/reload-plugins` で更新できます。
+
+最初に GitHub リポジトリの **Settings → Actions → General → Workflow permissions** で **Allow GitHub Actions to create and approve pull requests** を有効にしてください（[Changesets の設定手順](https://github.com/changesets/action/tree/v2#requirements)）。標準の `GITHUB_TOKEN` を使うため、追加のトークンは不要です。自動作成された PR の CI が承認待ちになった場合は、PR 画面の **Approve workflows to run** で実行を承認してください（[GitHub の仕様](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow)）。
+
+手元でリリース差分を生成する場合は `npm run release:version`、バージョンの整合性確認は `npm run check:version` を使います。履歴の生成時はプラグイン側も同期するため、`changeset version` 単体では実行しません。バージョン管理用の `package.json` は `private: true` で、npm 公開や GitHub Release の作成は行いません。
+
 ## ライセンス
 
 [MIT License](LICENSE)

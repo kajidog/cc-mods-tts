@@ -1,0 +1,19 @@
+{
+  "name": "cc-mods-tts",
+  "version": "0.3.1",
+  "private": true,
+  "description": "Claude Code TTS mod",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.11.0 || ^24.0.0 || >=26.0.0",
+    "npm": ">=10.9.0"
+  },
+  "scripts": {
+    "changeset": "changeset",
+    "release:version": "changeset version && node scripts/sync-plugin-version.mjs && npm install --package-lock-only --ignore-scripts",
+    "check:version": "node scripts/sync-plugin-version.mjs --check"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3"
+  }
+}
