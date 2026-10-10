@@ -26,7 +26,13 @@ jobs:
         with:
           node-version: 22
       # The mod API is early access: keep the version the mod was last checked with.
-      - run: npm install -g @anthropic-ai/claude-code@2.1.296
+      - run: npm install -g @anthropic-ai/claude-code@2.1.296 typescript@5.8.3
       # The same static analysis Claude Code runs when it loads the mod.
       - run: claude plugin validate --strict .
+      - name: Generate mod API types
+        run: claude --init-only --plugin-dir .
+        env:
+          # Emit API declarations even in a non-interactive session.
+          CLAUDE_CODE_PLUGIN_DIR_WATCH: "1"
+      - run: tsc -p .
       - run: claude plugin test .
