@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx -y @biomejs/biome@2.5.14 lint --error-on-warnings .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The mod API is early access: keep the version the mod was last checked with.
+      - run: npm install -g @anthropic-ai/claude-code@2.1.296
+      # The same static analysis Claude Code runs when it loads the mod.
+      - run: claude plugin validate --strict .
+      - run: claude plugin test .

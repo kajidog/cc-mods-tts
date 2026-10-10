@@ -56,7 +56,6 @@ export const register: Register = (on, options) => {
   let generation = 0
   let isTurnMuted = false
   const { isEnabled } = config
-  let isSynthesizing = false
   let player: string | undefined
   const synthesisProcess = new SpeechProcess()
   const playbackProcess = new SpeechProcess()
@@ -163,7 +162,6 @@ export const register: Register = (on, options) => {
         if (sentence.generation !== generation) continue
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => sentence.generation === generation
-        isSynthesizing = true
         let isFallback = false
         try {
           try {
@@ -193,8 +191,6 @@ export const register: Register = (on, options) => {
         } catch (error) {
           await $.process.run(["rm", "-f", file])
           if (isCurrent()) reportError(error)
-        } finally {
-          isSynthesizing = false
         }
       }
     })()

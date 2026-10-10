@@ -31,7 +31,7 @@ function host(on: On, blockedInput?: string) {
     commands.push([...e.argv])
     return { value: { exitCode: 0, stdout: e.argv[0] === "mktemp" ? `/tmp/claude-tts-test${++directories}\n` : "", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on("clock.after", () => new Promise<{ value: void }>(() => {}))
+  on("clock.after", () => new Promise<{ value: undefined }>(() => {}))
   on("process.spawn", async function* (_, e, next) {
     processes.push(e)
     if (blockedInput !== undefined && e.input === blockedInput) {
