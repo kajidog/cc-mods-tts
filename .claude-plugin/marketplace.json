@@ -1,0 +1,13 @@
+{
+  "name": "cc-mods-tts",
+  "description": "Claude Code mods by kajidog: tts reads Claude's replies aloud through Irodori-TTS, VOICEVOX or any command.",
+  "owner": {
+    "name": "kajidog"
+  },
+  "plugins": [
+    {
+      "name": "tts",
+      "source": "./"
+    }
+  ]
+}

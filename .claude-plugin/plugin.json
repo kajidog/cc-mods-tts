@@ -1,0 +1,173 @@
+{
+  "name": "tts",
+  "version": "0.1.0",
+  "description": "Reads Claude's replies aloud as they stream, sentence by sentence, through Irodori-TTS, VOICEVOX or any command.",
+  "author": {
+    "name": "kajidog"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Read replies aloud. /tts on and /tts off set this.",
+      "default": true
+    },
+    "mode": {
+      "type": "string",
+      "title": "Read mode",
+      "description": "stream: every sentence as the reply streams. final: only the turn's final answer, once it ends. notify: only short notices (done, error, a question or plan waiting for you).",
+      "default": "stream",
+      "options": [
+        "stream",
+        "final",
+        "notify"
+      ]
+    },
+    "engine": {
+      "type": "string",
+      "title": "TTS engine",
+      "description": "irodori: Irodori-TTS (/v1/audio/speech). voicevox: VOICEVOX or a compatible engine (AivisSpeech, COEIROINK v1). command: the command below.",
+      "default": "irodori",
+      "options": [
+        "irodori",
+        "voicevox",
+        "command"
+      ]
+    },
+    "fallback": {
+      "type": "string",
+      "title": "Fallback engine",
+      "description": "Tried for a sentence the engine above fails (its server down, a setting unset). none: report the error and skip the sentence.",
+      "default": "none",
+      "options": [
+        "none",
+        "irodori",
+        "voicevox",
+        "command"
+      ]
+    },
+    "speed": {
+      "type": "number",
+      "title": "Speed",
+      "description": "Speech speed multiplier, applied by the engine (Irodori 0.25–4, VOICEVOX speedScale); engine=command ignores it.",
+      "default": 1
+    },
+    "volume": {
+      "type": "number",
+      "title": "Volume",
+      "description": "Playback volume multiplier for every engine (1: as synthesized, 0.5: half, 2: double). Applied by the player; aplay and powershell need ffmpeg for it.",
+      "default": 1
+    },
+    "player": {
+      "type": "string",
+      "title": "Player",
+      "description": "How a wav is played. auto picks the first found of ffplay, paplay, aplay, afplay, powershell.exe.",
+      "default": "auto",
+      "options": [
+        "auto",
+        "ffplay",
+        "paplay",
+        "aplay",
+        "afplay",
+        "powershell"
+      ]
+    },
+    "maxCharsPerTurn": {
+      "type": "number",
+      "title": "Max characters per response",
+      "description": "Stops reading one model response past this many characters and says it skipped the rest; text before a tool call and the answer after it count apart. 0 reads everything.",
+      "default": 600
+    },
+    "interruptOnPrompt": {
+      "type": "boolean",
+      "title": "Stop on new prompt",
+      "description": "Stop speaking when you submit a new prompt.",
+      "default": true
+    },
+    "irodoriUrl": {
+      "type": "string",
+      "title": "Irodori URL",
+      "description": "Base URL of Irodori-TTS.",
+      "default": "http://localhost:8088"
+    },
+    "irodoriVoice": {
+      "type": "string",
+      "title": "Irodori voice",
+      "description": "Reference voice id registered on the Irodori server.",
+      "default": ""
+    },
+    "voicevoxUrl": {
+      "type": "string",
+      "title": "VOICEVOX URL",
+      "description": "Base URL of VOICEVOX (AivisSpeech: http://localhost:10101).",
+      "default": "http://localhost:50021"
+    },
+    "voicevoxSpeaker": {
+      "type": "number",
+      "title": "VOICEVOX speaker",
+      "description": "Style id passed as speaker (3: ずんだもん ノーマル).",
+      "default": 3
+    },
+    "command": {
+      "type": "string",
+      "title": "Command (engine=command)",
+      "description": "For engine=command: argv split on spaces, {out} replaced by the wav path to write; the text arrives on stdin.",
+      "default": ""
+    },
+    "noticeDone": {
+      "type": "string",
+      "title": "Notice: done",
+      "description": "Said in notify mode as a turn ends with an answer. Empty: say nothing.",
+      "default": "完了しました。"
+    },
+    "noticeError": {
+      "type": "string",
+      "title": "Notice: error",
+      "description": "Said in notify mode as an API error ends a turn. Empty: say nothing.",
+      "default": "エラーで止まりました。"
+    },
+    "noticeRefusal": {
+      "type": "string",
+      "title": "Notice: refusal",
+      "description": "Said in notify mode as the model refuses. Empty: say nothing.",
+      "default": "応答できませんでした。"
+    },
+    "noticeQuestion": {
+      "type": "string",
+      "title": "Notice: question",
+      "description": "Said as a question opens, before the question itself. Empty: say nothing.",
+      "default": "質問があります。"
+    },
+    "noticeQuestions": {
+      "type": "string",
+      "title": "Notice: questions",
+      "description": "Said as several questions open, in place of reading them; {n} is their number. Empty: say nothing.",
+      "default": "質問が{n}件あります。"
+    },
+    "noticePlan": {
+      "type": "string",
+      "title": "Notice: plan",
+      "description": "Said as a plan waits for approval. Empty: say nothing.",
+      "default": "プランの確認をお願いします。"
+    },
+    "noticeCommand": {
+      "type": "string",
+      "title": "Notice: command",
+      "description": "Said as a Bash permission dialog opens, before the command's description. Empty: say nothing.",
+      "default": "コマンドの確認をお願いします。"
+    },
+    "noticeTool": {
+      "type": "string",
+      "title": "Notice: tool",
+      "description": "Said as any other tool's permission dialog opens. Empty: say nothing.",
+      "default": "ツールの許可をお願いします。"
+    },
+    "noticeCut": {
+      "type": "string",
+      "title": "Notice: cut",
+      "description": "Said where a response passes Max characters per response and the rest is skipped. Empty: say nothing.",
+      "default": "以下、省略します。"
+    }
+  }
+}
