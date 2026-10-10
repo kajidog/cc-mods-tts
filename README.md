@@ -6,6 +6,8 @@ Claude Code の mod（関数フックのプラグイン）。Claude の返答を
 - `turn.step` の text チャンクを文に分割し、合成と再生をパイプラインで流す（コードブロック・表・URL は読み上げから除外してます）
 - エンジン: [VOICEVOX](https://voicevox.hiroshiba.jp/) 互換 / [Irodori-TTS](https://github.com/Aratako/Irodori-TTS-Server) / 任意コマンド
 
+読み上げ用のテキストでは、箇条書きの印を除き、括弧を空白に置き換えて中身を読みます。明確なファイルパスはファイル名と行番号に短縮します。負数・小数・`C++`・`--help` など、意味を持つ記号は残します。
+
 ## セットアップ
 
 Claude Code 2.1.275 以降。どちらか一方で使えるようにできます。
@@ -73,7 +75,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | `/tts config` | 設定の一覧と今の値 |
 | `/tts on` / `/tts off` | 有効・無効（`/config` の Enabled と同じ） |
 | `/tts stop` | 合成・再生中の処理とキューを止め、そのターンの残りの返答も読まない。次のターンから再開 |
-| `/tts test [text]` | テスト読み上げ |
+| `/tts test [text]` | 通常の返答と同じ整形を通してテスト読み上げ |
 | `/tts mode [stream\|final\|notify]` | 読み上げモード切替。引数なしでモードを選ぶペインを開く |
 | `/tts engine [name]` | エンジン切替。引数なしで各エンジンが応答するか（ok / down / unset）を表示 |
 | `/tts voice [id]` | 引数なしで声を選ぶペインを開く（↑↓で移動、Enter で決定、Esc で閉じる）。id 指定で直接設定 |
@@ -117,6 +119,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | Player（`player`） | 再生コマンド。`auto` は ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
 | Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「以下、省略します。」と言って止める。0 で無制限 | 600 |
 | Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
+| Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
 | Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
 | Irodori voice（`irodoriVoice`） | Irodori の声（`/tts voice` で選べる） | （未設定） |
 | VOICEVOX URL（`voicevoxUrl`） | VOICEVOX 互換エンジンの URL（AivisSpeech は `http://localhost:10101`） | `http://localhost:50021` |

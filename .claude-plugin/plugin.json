@@ -1,6 +1,6 @@
 {
   "name": "tts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reads Claude's replies aloud as they stream, sentence by sentence, through VOICEVOX, Irodori-TTS or any command.",
   "author": {
     "name": "kajidog"
@@ -84,6 +84,12 @@
       "title": "Stop on new prompt",
       "description": "Stop speaking when you submit a new prompt.",
       "default": true
+    },
+    "modelPrompt": {
+      "type": "string",
+      "title": "Prompt for the model",
+      "description": "Added to Claude's system prompt while replies are read (stream and final modes), so that what is spoken reads well. Empty: add nothing.",
+      "default": "応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。"
     },
     "irodoriUrl": {
       "type": "string",

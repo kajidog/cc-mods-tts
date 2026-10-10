@@ -110,6 +110,23 @@ test("the response budget caps actual characters and adds one cut notice", { opt
   expect(spoken.slice(0, -1).join("").length).toBe(600)
 })
 
+test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.command.run(command("test — 項目（任意）です。\n1) /home/me/日本語/main.ts:10 を確認。\n```sh\nnpm test\n```"))
+  await observed.idle()
+  expect(observed.spoken()).toEqual(["項目 任意 です。", "main.tsの10行目 を確認。"])
+})
+
+test("test speech reports when formatting leaves nothing to read", { options }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  const result = await $.command.run(command("test ---"))
+  await observed.idle()
+  expect(result.text).toBe("no text to read after formatting")
+  expect(observed.spoken()).toEqual([])
+})
+
 test("clear cleans the directory and allows speech in a fresh private directory", { options }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)
@@ -121,3 +138,17 @@ test("clear cleans the directory and allows speech in a fresh private directory"
   await settle()
   expect(observed.processes[0]?.argv[1]).toBe("/tmp/claude-tts-test2/000000.wav")
 })
+
+/** A test body that composes the system prompt and checks its sections as `id:text`. */
+const expectSections = (expected: string[]): NonNullable<Parameters<typeof test>[2]> => async ($, on) => {
+  host(on)
+  on("prompt.compose", () => ({ sections: [{ id: "intro", text: "x", scope: "shared" as const }] }))
+  const { sections } = await $.prompt.compose({ model: "test", promptModel: "test", surfaces: [], tools: [], outputStyle: null, traits: [] })
+  expect(sections.map(section => `${section.id}:${section.text}`)).toEqual(expected)
+}
+
+test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。" } }, expectSections(["intro:x", "tts:spoken:日本語で。"]))
+
+for (const [name, extra] of [["an empty prompt", { modelPrompt: "" }], ["notify mode", { mode: "notify" }], ["off", { enabled: false }]] as const) {
+  test(`adds nothing to the system prompt with ${name}`, { options: { ...options, ...extra } }, expectSections(["intro:x"]))
+}

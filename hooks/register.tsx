@@ -264,13 +264,15 @@ export const register: Register = (on, options) => {
         return { text: "stopped" }
       }
       case "test": {
-        const text = rest.join(" ") || "読み上げのテストです。"
+        const text = e.args.trim().replace(/^test(?:\s+|$)/, "") || "読み上げのテストです。"
+        const texts = toSentences(text)
+        if (texts.length === 0) return { text: "no text to read after formatting" }
         try {
           engine.synthesis(text, "/dev/null")
         } catch (error) {
           if (fallback === undefined) return { text: error instanceof Error ? error.message : String(error) }
         }
-        enqueue([text])
+        enqueue(texts)
         return { text: `testing ${config.engine} (the first Irodori request loads the model and can take a while)` }
       }
       case "voice": {
@@ -393,6 +395,13 @@ export const register: Register = (on, options) => {
   on("prompt.submit", async ($, e, next) => {
     if (config.interruptOnPrompt) await stop()
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Asks the model to write what reads well aloud; notify mode reads none of its text.
+  on("prompt.compose", async ($, e, next) => {
+    const composed = await next(e)
+    if (!isEnabled || config.mode === "notify" || config.modelPrompt === "") return composed
+    return { sections: [...composed.sections, { id: "tts:spoken", text: config.modelPrompt, scope: "session" as const }] }
   }).catch(($, e, next) => next(e))
 
   on("turn.start", async ($, e, next) => {
