@@ -36,6 +36,11 @@ export function floorOutcome(code: number | null, stderr: string): "yielded" | "
 const STALE_HOLDER = 60
 /** Seconds after which a waiter that stopped refreshing its file counts as gone. */
 const STALE_WAITER = 5
+/**
+ * Seconds after which a gone waiter's file is removed. Until then it is only passed over: a waiter
+ * that was merely paused may be writing a fresh one, which a removal could take with it.
+ */
+const ABANDONED_WAITER = 3600
 
 // Unix: the shared directory is the user's own; `set -C` makes creating the lock file atomic.
 const SH_PRELUDE = [
@@ -43,8 +48,8 @@ const SH_PRELUDE = [
   // Never through a link another user planted: the directory must be a real one of this user's.
   `mkdir "$dir" 2>/dev/null; [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] && chmod 700 "$dir" && mkdir -p "$dir/wait" || exit 1`,
   `valid() { case $1 in ''|*[!0-9]*) return 1;; esac; }`,
-  // Whether a session other than `$id` waits, freshly, with a priority above `$prio`; drops stale waiters.
-  `higher() { for f in "$dir"/wait/*; do [ -f "$f" ] && [ "$f" != "$dir/wait/$id" ] || continue; read -r p t < "$f" 2>/dev/null; valid "$p" && valid "$t" || continue; if [ $(($1 - t)) -gt ${STALE_WAITER} ]; then rm -f "$f"; elif [ "$p" -gt "$prio" ]; then return 0; fi; done; return 1; }`,
+  // Whether a session other than `$id` waits, freshly, with a priority above `$prio`; removes long-abandoned waiters.
+  `higher() { for f in "$dir"/wait/*; do [ -f "$f" ] && [ "$f" != "$dir/wait/$id" ] || continue; read -r p t < "$f" 2>/dev/null; valid "$p" && valid "$t" || continue; if [ $(($1 - t)) -gt ${ABANDONED_WAITER} ]; then rm -f "$f"; elif [ $(($1 - t)) -le ${STALE_WAITER} ] && [ "$p" -gt "$prio" ]; then return 0; fi; done; return 1; }`,
   `owner() { o=; b=; [ -f "$dir/floor" ] && read -r o b < "$dir/floor" 2>/dev/null; }`,
   `beat() { echo "$id $1" > "$dir/floor.$id" && mv -f "$dir/floor.$id" "$dir/floor"; }`,
   // Whether the floor file at $2 is a holder's that is gone: no heartbeat for a while, or one it never finished writing that is old.
@@ -63,7 +68,7 @@ const PS_PRELUDE = [
   `$floor = Join-Path $dir 'floor'`,
   "function Now { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }",
   "function Pair($path) { try { $s = @([IO.File]::ReadAllText($path).Trim() -split ' '); if ($s.Count -eq 2 -and $s[1] -match '^[0-9]+$') { return ,$s } } catch {}; return $null }",
-  `function Higher($now) { foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $dir 'wait') -File -ErrorAction SilentlyContinue)) { if ($f.Name -eq $id) { continue }; $s = Pair $f.FullName; if ($null -eq $s -or $s[0] -notmatch '^[0-9]+$') { continue }; if ($now - [long]$s[1] -gt ${STALE_WAITER}) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } elseif ([int]$s[0] -gt $prio) { return $true } }; return $false }`,
+  `function Higher($now) { foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $dir 'wait') -File -ErrorAction SilentlyContinue)) { if ($f.Name -eq $id) { continue }; $s = Pair $f.FullName; if ($null -eq $s -or $s[0] -notmatch '^[0-9]+$') { continue }; $age = $now - [long]$s[1]; if ($age -gt ${ABANDONED_WAITER}) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } elseif ($age -le ${STALE_WAITER} -and [int]$s[0] -gt $prio) { return $true } }; return $false }`,
   // Files are written aside and swapped in whole; the floor is only ever replaced, never created again by a heartbeat.
   "function Put($path, $text, $mayCreate) { $tmp = Join-Path $dir \"put.$id.tmp\"; try { [IO.File]::WriteAllText($tmp, $text); if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, $null) } elseif ($mayCreate) { [IO.File]::Move($tmp, $path) } } catch {} finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }",
   "function Beat($now) { Put $floor \"$id $now\" $false }",

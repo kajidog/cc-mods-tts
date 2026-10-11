@@ -412,6 +412,9 @@ export const register: Register = (on, options) => {
           waiting = { clip, priority, limit }
           const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
           waiting = undefined
+          // Cleared on every way out, a stop's included: a flag left set would keep later waits from restarting.
+          const isRestarted = isRewaiting
+          isRewaiting = false
           // A wait cancelled just as it took the floor still holds it: it is given up once nothing is left to say.
           if (waited.code === 0) isHoldingFloor = true
           // A stop cancels the wait along with the clip; one killed mid-way may have taken the floor, so give it back.
@@ -420,10 +423,7 @@ export const register: Register = (on, options) => {
             return
           }
           // The clip's priority or limit changed: wait again with the new ones.
-          if (isRewaiting) {
-            isRewaiting = false
-            continue
-          }
+          if (isRestarted) continue
           if (waited.code === FLOOR_TIMEOUT) {
             quietThrough = seq
             return

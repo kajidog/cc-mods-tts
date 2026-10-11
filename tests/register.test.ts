@@ -227,6 +227,33 @@ test("stream text of a response that ends calling a tool waits within the limit 
   expect(observed.plays()).toEqual([])
 })
 
+test("a stop during a restarted wait leaves later waits free to restart", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind === "acquire" && argv[5] === "0" ? "block" : 0)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.turnId === "first" ? "調べます。" : "答えです。" }
+    const toolUses = e.turnId === "first" ? [{ name: "Read", input: {} }] : []
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  const first = $.turn.step({ ...step, turnId: "first" })
+  await first.next()
+  await observed.idle()
+  // The response ends calling a tool, restarting the wait, and a stop lands before it restarts.
+  for await (const _ of first) { /* Finish the response. */ }
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* The next answer, while another session reads. */ }
+  await observed.idle()
+  await $.turn.complete({ ...completed("答えです。"), turnId: "second" })
+  await observed.idle()
+  await settle()
+  expect(observed.waits().at(-1)).toEqual(["1", "0"])
+  expect(observed.plays()).toEqual(["1"])
+})
+
 test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {
   const observed = host(on)
   observed.floor.exit = kind => (kind === "play" ? 75 : 0)
