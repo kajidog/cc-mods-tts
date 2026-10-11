@@ -26,7 +26,7 @@ import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from
 import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
-import { capLength, SKIPPED_CODE, type Spoken, SpeechSplitter, toSentences } from "./speech-text"
+import { capLength, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, type Spoken, SpeechSplitter, toSentences } from "./speech-text"
 
 const HELP = [
   "/tts                   state: on/off, mode, engine, speed, volume",
@@ -194,12 +194,22 @@ export const register: Register = (on, options) => {
    */
   const enqueue = (spoken: readonly Spoken[], budget?: Budget) => {
     const origin = budget ?? NOTICE
+    // The quote notice, joined to what is said next: "引用、" and the quote's first sentence.
+    let lead = ""
     for (const text of spoken) {
-      // The code notice is the mod's, not the response's: it uses no budget and is never the last sentence.
-      if (text === SKIPPED_CODE) {
-        if (budget?.isCut !== true) say(config.notices.code, origin)
+      if (text === QUOTED) {
+        lead = config.notices.quote
         continue
       }
+      // The code and table notices are the mod's, not the response's: they use no budget and are never the last sentence.
+      if (text === SKIPPED_CODE || text === SKIPPED_TABLE) {
+        const notice = text === SKIPPED_CODE ? config.notices.code : config.notices.table
+        if (budget?.isCut !== true && notice !== "") say(lead + notice, origin)
+        lead = ""
+        continue
+      }
+      const quote = lead
+      lead = ""
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
         const length = Array.from(text).length
         if (!budget.isCut && budget.spoken + length > config.maxCharsPerTurn) {
@@ -213,7 +223,7 @@ export const register: Register = (on, options) => {
         }
         budget.spoken += length
       }
-      say(text, origin)
+      say(quote + text, origin)
     }
   }
 

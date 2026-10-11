@@ -13,6 +13,8 @@ const notices = {
   tool: "ツールの許可をお願いします。",
   cut: "",
   code: "",
+  table: "",
+  quote: "",
 }
 const dialogSpeech = (tool: string, input: unknown) => speechWith(tool, input, notices)
 

@@ -24,18 +24,52 @@ const CODE_PATH = new RegExp(String.raw`^(~|[A-Za-z]:)?((?:[\p{L}\p{N}\p{M}_.@+ 
 
 /** Where fenced code was skipped; the reader decides what, if anything, to say there. */
 export const SKIPPED_CODE: unique symbol = Symbol("skipped code")
+/** Where a table was skipped, once per table. */
+export const SKIPPED_TABLE: unique symbol = Symbol("skipped table")
+/** Where a block quote starts, just before its first sentence or notice. */
+export const QUOTED: unique symbol = Symbol("quoted")
 
-/** What a reply turns into for a listener: its sentences, and marks where code was skipped. */
-export type Spoken = string | typeof SKIPPED_CODE
+/** What a reply turns into for a listener: its sentences, and marks where code or a table was skipped or a quote starts. */
+export type Spoken = string | typeof SKIPPED_CODE | typeof SKIPPED_TABLE | typeof QUOTED
+
+/**
+ * HTML comments and the tags answers use, outside code spans: the tags go,
+ * their text stays, and `<br>` parts words. `a < b`, `Promise<void>` stay.
+ */
+const HTML = /(`[^`]*`)|<!--.*?-->|<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)\b[^<>]*>/gi
+/** A UUID, read as its first 8 characters. */
+const UUID = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi
+/** A long hex string with digits and letters (a hash), read as its first 7 characters; words like `deadbeef` stay. */
+const HASH = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,}\b/gi
+const FENCE = /^\s*(`{3,}|~{3,})(.*)$/
+const QUOTE_MARKER = /^[ \t]*>[ \t]?/
+
+/** Takes up to `levels` quote markers off the start of a line. */
+function unquote(text: string, levels = Number.POSITIVE_INFINITY): { depth: number; body: string } {
+  let depth = 0
+  let body = text
+  for (let marker = QUOTE_MARKER.exec(body); marker !== null && depth < levels; marker = QUOTE_MARKER.exec(body)) {
+    body = body.slice(marker[0].length)
+    depth++
+  }
+  return { depth, body }
+}
 
 /**
  * Turns streamed Markdown into speakable sentences as early as possible:
  * complete sentences of the current line are released before its newline
- * arrives, and fenced code and tables are never spoken.
+ * arrives, and fenced code and tables are never spoken, in a quote or not.
  */
 export class SpeechSplitter {
   private partial = ""
   private fence: string | undefined
+  /** How deep in quotes the open fence is; only a line as deep may close it. */
+  private fenceDepth = 0
+  private isInTable = false
+  private isInQuote = false
+  private isQuoteAnnounced = false
+  /** Whether `partial` is the rest of a line whose start was already released. */
+  private isContinued = false
 
   push(text: string): Spoken[] {
     this.partial += text
@@ -43,21 +77,22 @@ export class SpeechSplitter {
 
     let newline = this.partial.indexOf("\n")
     while (newline >= 0) {
-      sentences.push(...this.line(this.partial.slice(0, newline)))
+      sentences.push(...this.line(this.partial.slice(0, newline), true))
       this.partial = this.partial.slice(newline + 1)
       newline = this.partial.indexOf("\n")
     }
 
     // Keep unfinished links and URLs whole: punctuation inside them is not a sentence end.
-    // Lines that may open a fence or a table also wait for their newline.
-    if (this.fence === undefined && !/^\s*[`~|]/.test(this.partial)) {
+    // Lines that may open a fence or a table, in a quote or not, also wait for their newline.
+    if (this.fence === undefined && !/^[\s>]*[`~|]/.test(this.partial)) {
       const markup = this.partial.search(/https?:\/\/|!?\[/)
       // The period in "1. " belongs to the list marker, not a spoken sentence.
-      const start = LIST_MARKER.exec(this.partial)?.[0].length ?? 0
+      const quote = this.isContinued ? 0 : this.partial.length - unquote(this.partial).body.length
+      const start = quote + (LIST_MARKER.exec(this.partial.slice(quote))?.[0].length ?? 0)
       const end = markup < 0 ? this.partial.length : Math.max(start, markup)
       const cut = lastTerminatorEnd(this.partial.slice(start, end))
       if (cut > 0) {
-        sentences.push(...this.line(this.partial.slice(0, start + cut)))
+        sentences.push(...this.line(this.partial.slice(0, start + cut), false))
         this.partial = this.partial.slice(start + cut)
       }
     }
@@ -65,25 +100,56 @@ export class SpeechSplitter {
   }
 
   flush(): Spoken[] {
-    const sentences = this.line(this.partial)
+    const sentences = this.line(this.partial, true)
     this.partial = ""
     this.fence = undefined
+    this.isInTable = false
+    this.isInQuote = false
     return sentences
   }
 
-  private line(text: string): Spoken[] {
-    const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(text)
+  private line(text: string, isLineEnd: boolean): Spoken[] {
+    const isContinued = this.isContinued
+    this.isContinued = !isLineEnd
+    if (isContinued) return splitSentences(toSpeakable(text))
+
+    const { depth, body } = unquote(text)
     if (this.fence !== undefined) {
-      if (marker && marker[1]!.startsWith(this.fence) && marker[2]!.trim() === "") {
-        this.fence = undefined
+      if (depth >= this.fenceDepth) {
+        const marker = FENCE.exec(unquote(text, this.fenceDepth).body)
+        if (marker && marker[1]!.startsWith(this.fence) && marker[2]!.trim() === "") this.fence = undefined
+        return []
       }
-      return []
+      // A quote that ends closes the code fenced in it.
+      this.fence = undefined
     }
+
+    if (depth === 0) this.isInQuote = false
+    else if (!this.isInQuote) {
+      this.isInQuote = true
+      this.isQuoteAnnounced = false
+    }
+
+    let spoken: Spoken[]
+    const marker = FENCE.exec(body)
     if (marker) {
       this.fence = marker[1]
-      return [SKIPPED_CODE]
+      this.fenceDepth = depth
+      this.isInTable = false
+      spoken = [SKIPPED_CODE]
+    } else if (body.trim().startsWith("|")) {
+      spoken = this.isInTable ? [] : [SKIPPED_TABLE]
+      this.isInTable = true
+    } else {
+      this.isInTable = false
+      spoken = splitSentences(toSpeakable(body))
     }
-    return splitSentences(toSpeakable(text))
+
+    if (this.isInQuote && !this.isQuoteAnnounced && spoken.length > 0) {
+      this.isQuoteAnnounced = true
+      return [QUOTED, ...spoken]
+    }
+    return spoken
   }
 }
 
@@ -101,12 +167,21 @@ export function toSpeakable(line: string): string {
     .replace(/^#{1,6}\s+/, "")
     .replace(/^>\s?/, "")
     .replace(LIST_MARKER, "")
+    .replace(HTML, (match, code: string | undefined, tag: string | undefined) =>
+      code ?? (tag?.toLowerCase() === "br" ? " " : ""),
+    )
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/https?:\/\/\S+/g, "URL")
     .replace(/`([^`]+)`/g, speakCodePath)
     .replace(PATH, speakPath)
     .replace(/`([^`]*)`/g, "$1")
+    .replace(UUID, uuid => uuid.slice(0, 8))
+    .replace(HASH, hash => hash.slice(0, 7))
+    // Identifiers read as words: SKIPPED_CODE, maxCharsPerTurn. A capital after one lowercase
+    // letter (iPhone, dB) or after capitals (URLs, SQLite, WSLg) is part of a name, not a word break.
+    .replace(/_+/g, " ")
+    .replace(/(?<=[a-z]{2})(?=[A-Z])/g, " ")
     .replace(/\*\*|~~|(?<!\w)\*(?!\s)|(?<!\s)\*(?!\w)/g, "")
     .replace(/[()[\]{}（）［］｛｝「」『』【】〈〉《》]/g, " ")
     .replace(/\s+/g, " ")

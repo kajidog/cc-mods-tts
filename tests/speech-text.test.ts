@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { capLength, SKIPPED_CODE, SpeechSplitter, toSentences, toSpeakable } from "../hooks/speech-text"
+import { capLength, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, SpeechSplitter, toSentences, toSpeakable } from "../hooks/speech-text"
 
 const feed = (pieces: readonly string[]) => {
   const splitter = new SpeechSplitter()
@@ -20,9 +20,30 @@ describe("SpeechSplitter", () => {
     expect([...released.flat(), ...rest]).toEqual(["見てください。", SKIPPED_CODE, "終わり。"])
   })
 
-  test("skips tables and keeps list text", async () => {
-    const { released, rest } = feed(["| a | b |\n|---|---|\n- **太字**の項目\n"])
-    expect([...released.flat(), ...rest]).toEqual(["太字の項目"])
+  test("skips tables, marks each once, and keeps list text", async () => {
+    const { released, rest } = feed(["| a | b |\n|---|---|\n| 1 | 2 |\n- **太字**の項目\n", "| c |\n|---|\n"])
+    expect([...released.flat(), ...rest]).toEqual([SKIPPED_TABLE, "太字の項目", SKIPPED_TABLE])
+  })
+
+  test("marks a table split across chunks once", async () => {
+    const { released, rest } = feed(["| a ", "| b |\n|--", "-|---|\n終わり。"])
+    expect([...released.flat(), ...rest]).toEqual([SKIPPED_TABLE, "終わり。"])
+  })
+
+  test("marks a quote once before its first sentence, across every chunk boundary", async () => {
+    const text = "前。\n> 引いた文。続き\n> 二行目。\n\n> 1. 別の引用。\n後。"
+    for (let at = 1; at < text.length; at++) {
+      const { released, rest } = feed([text.slice(0, at), text.slice(at)])
+      expect([...released.flat(), ...rest]).toEqual(["前。", QUOTED, "引いた文。", "続き", "二行目。", QUOTED, "別の引用。", "後。"])
+    }
+  })
+
+  test("skips tables and code in a quote, and closes the code where the quote ends", async () => {
+    expect(toSentences("> | a | b |\n> |---|---|\n> 表の後。")).toEqual([QUOTED, SKIPPED_TABLE, "表の後。"])
+    expect(toSentences("> ```\n> secret\n> ```\n> 後。")).toEqual([QUOTED, SKIPPED_CODE, "後。"])
+    expect(toSentences("> ```\n> secret\n\n外。")).toEqual([QUOTED, SKIPPED_CODE, "外。"])
+    expect(toSentences("```\n> ```\nsecret\n```\n外。")).toEqual([SKIPPED_CODE, "外。"])
+    expect(toSentences(">\n> 🎉\n> 本文。")).toEqual([QUOTED, "本文。"])
   })
 
   test("keeps list markers silent across every chunk boundary", async () => {
@@ -121,6 +142,26 @@ test("toSpeakable leaves slashes that are not clearly paths", async () => {
   for (const text of ["and/or", "1/2 と 2026/10/10", "v1.2/v1.3", "React/Next.js で作る", "TCP/IP", "e.g./i.e.", "example.com:8080/api/user.json"]) {
     expect(toSpeakable(text)).toBe(text)
   }
+})
+
+test("toSpeakable reads identifiers as separate words", async () => {
+  expect(toSpeakable("`SKIPPED_CODE` と `maxCharsPerTurn` を見る")).toBe("SKIPPED CODE と max Chars Per Turn を見る")
+  expect(toSpeakable("useApiClients の __init__ と snake_case")).toBe("use Api Clients の init と snake case")
+  expect(toSpeakable("URLs と IDs と SQLite と WSLg と HTTPServer")).toBe("URLs と IDs と SQLite と WSLg と HTTPServer")
+  expect(toSpeakable("iPhone で 3dB と macOS")).toBe("iPhone で 3dB と mac OS")
+  expect(toSpeakable("VOICEVOX と URL はそのまま")).toBe("VOICEVOX と URL はそのまま")
+})
+
+test("toSpeakable reads hashes and UUIDs by their start, and leaves hex words", async () => {
+  expect(toSpeakable("`c43ac55` と c43ac55d0b2e4f1a9c8e7d6b5a4f3e2d1c0b9a8f を比べる")).toBe("c43ac55 と c43ac55 を比べる")
+  expect(toSpeakable("ID は 123e4567-e89b-12d3-a456-426614174000 です")).toBe("ID は 123e4567 です")
+  expect(toSpeakable("deadbeefcafe と 1234567890123 と 0x1234abcd5678ef")).toBe("deadbeefcafe と 1234567890123 と 0x1234abcd5678ef")
+})
+
+test("toSpeakable drops common HTML tags, keeps their text, and leaves code and comparisons", async () => {
+  expect(toSpeakable("<kbd>Ctrl</kbd>+<kbd>C</kbd> で止める<br/>次へ")).toBe("Ctrl+C で止める 次へ")
+  expect(toSpeakable("<details><summary>詳細</summary> <!-- メモ -->を開く")).toBe("詳細 を開く")
+  expect(toSpeakable("`<div>` と a < b > c と Promise<void>")).toBe("<div> と a < b > c と Promise<void>")
 })
 
 test("capLength keeps surrogate pairs together when splitting long sentences", async () => {

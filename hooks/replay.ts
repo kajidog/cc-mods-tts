@@ -58,7 +58,7 @@ export function replayOptions(blocks: readonly string[]): PickerOption[] {
 
 /** A block's first sentence as it would be heard, cut to one short line. */
 function replayLabel(block: string): string {
-  const first = toSentences(block).find(sentence => typeof sentence === "string") ?? "（コードのみ）"
+  const first = toSentences(block).find(sentence => typeof sentence === "string") ?? "（コードや表のみ）"
   const characters = Array.from(first)
   return characters.length > MAX_LABEL ? `${characters.slice(0, MAX_LABEL - 1).join("")}…` : first
 }

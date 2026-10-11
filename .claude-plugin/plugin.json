@@ -192,6 +192,18 @@
       "title": "TTS notice: code",
       "description": "Said where a fenced code block is skipped (stream and final modes). Empty: say nothing.",
       "default": "コードは省略します。"
+    },
+    "noticeTable": {
+      "type": "string",
+      "title": "TTS notice: table",
+      "description": "Said where a Markdown table is skipped (stream and final modes). Empty: say nothing.",
+      "default": "表は省略します。"
+    },
+    "noticeQuote": {
+      "type": "string",
+      "title": "TTS notice: quote",
+      "description": "Said before a block quote, joined to its first sentence (stream and final modes). Empty: say nothing.",
+      "default": "引用、"
     }
   }
 }
