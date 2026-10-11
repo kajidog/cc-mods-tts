@@ -36,8 +36,6 @@ export function floorOutcome(code: number | null, stderr: string): "yielded" | "
 const STALE_HOLDER = 60
 /** Seconds after which a waiter that stopped refreshing its file counts as gone. */
 const STALE_WAITER = 5
-/** Seconds after which a takeover a waiter died during counts as gone. */
-const STALE_TAKEOVER = 10
 
 // Unix: the shared directory is the user's own; `set -C` makes creating the lock file atomic.
 const SH_PRELUDE = [
@@ -49,11 +47,13 @@ const SH_PRELUDE = [
   `higher() { for f in "$dir"/wait/*; do [ -f "$f" ] && [ "$f" != "$dir/wait/$id" ] || continue; read -r p t < "$f" 2>/dev/null; valid "$p" && valid "$t" || continue; if [ $(($1 - t)) -gt ${STALE_WAITER} ]; then rm -f "$f"; elif [ "$p" -gt "$prio" ]; then return 0; fi; done; return 1; }`,
   `owner() { o=; b=; [ -f "$dir/floor" ] && read -r o b < "$dir/floor" 2>/dev/null; }`,
   `beat() { echo "$id $1" > "$dir/floor.$id" && mv -f "$dir/floor.$id" "$dir/floor"; }`,
-  // Whether the floor's holder is gone: no heartbeat for a while, or a file it never finished writing that is old.
-  `stale() { owner; if valid "$b"; then [ $(($1 - b)) -gt ${STALE_HOLDER} ]; else [ -n "$(find "$dir/floor" -mmin +${Math.ceil(STALE_HOLDER / 60)} 2>/dev/null)" ]; fi; }`,
-  // Removes a stale floor one waiter at a time, looking again under the takeover lock:
-  // a floor another waiter took meanwhile is fresh, and stays.
-  `takeover() { if (set -C; echo "$1" > "$dir/takeover") 2>/dev/null; then stale "$1" && rm -f "$dir/floor"; rm -f "$dir/takeover"; else read -r t < "$dir/takeover" 2>/dev/null; if valid "$t"; then [ $(($1 - t)) -gt ${STALE_TAKEOVER} ] && rm -f "$dir/takeover"; elif [ -n "$(find "$dir/takeover" -mmin +1 2>/dev/null)" ]; then rm -f "$dir/takeover"; fi; fi; }`,
+  // Whether the floor file at $2 is a holder's that is gone: no heartbeat for a while, or one it never finished writing that is old.
+  `staleat() { o=; b=; [ -f "$2" ] || return 1; read -r o b < "$2" 2>/dev/null; if valid "$b"; then [ $(($1 - b)) -gt ${STALE_HOLDER} ]; else [ -n "$(find "$2" -mmin +${Math.ceil(STALE_HOLDER / 60)} 2>/dev/null)" ]; fi; }`,
+  // Moves the floor aside and judges the file moved, not what was seen before: a floor another waiter
+  // took meanwhile is fresh, and goes back, never over one created since.
+  `takeover() { t="$dir/floor.stale.$id"; mv "$dir/floor" "$t" 2>/dev/null || return 0; staleat "$1" "$t" || ln "$t" "$dir/floor" 2>/dev/null; rm -f "$t"; }`,
+  // A waiter's file is replaced whole: a holder never reads it half written.
+  `put() { echo "$2" > "$dir/wait.$id" && mv -f "$dir/wait.$id" "$1"; }`,
   `fail() { echo "${FLOOR_MARK} $2" >&2; exit $1; }`,
 ].join("\n")
 
@@ -64,10 +64,14 @@ const PS_PRELUDE = [
   "function Now { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }",
   "function Pair($path) { try { $s = @([IO.File]::ReadAllText($path).Trim() -split ' '); if ($s.Count -eq 2 -and $s[1] -match '^[0-9]+$') { return ,$s } } catch {}; return $null }",
   `function Higher($now) { foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $dir 'wait') -File -ErrorAction SilentlyContinue)) { if ($f.Name -eq $id) { continue }; $s = Pair $f.FullName; if ($null -eq $s -or $s[0] -notmatch '^[0-9]+$') { continue }; if ($now - [long]$s[1] -gt ${STALE_WAITER}) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } elseif ([int]$s[0] -gt $prio) { return $true } }; return $false }`,
-  "function Beat($now) { try { [IO.File]::WriteAllText($floor, \"$id $now\") } catch {} }",
-  `function Stale($now) { $o = Pair $floor; if ($null -ne $o) { return ($now - [long]$o[1] -gt ${STALE_HOLDER}) }; $f = Get-Item -LiteralPath $floor -ErrorAction SilentlyContinue; return ($null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) }`,
+  // Files are written aside and swapped in whole; the floor is only ever replaced, never created again by a heartbeat.
+  "function Put($path, $text, $mayCreate) { $tmp = Join-Path $dir \"put.$id.tmp\"; try { [IO.File]::WriteAllText($tmp, $text); if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, $null) } elseif ($mayCreate) { [IO.File]::Move($tmp, $path) } } catch {} finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } }",
+  "function Beat($now) { Put $floor \"$id $now\" $false }",
+  `function StaleAt($path, $now) { $o = Pair $path; if ($null -ne $o) { return ($now - [long]$o[1] -gt ${STALE_HOLDER}) }; $f = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue; return ($null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) }`,
+  "function Stale($now) { StaleAt $floor $now }",
   "function Create($path, $text) { try { $file = [IO.File]::Open($path, 'CreateNew', 'Write'); $bytes = [Text.Encoding]::ASCII.GetBytes($text); $file.Write($bytes, 0, $bytes.Length); $file.Dispose(); return $true } catch [IO.IOException] { return $false } }",
-  `function Takeover($now) { $t = Join-Path $dir 'takeover'; if (Create $t "$now") { try { if (Stale $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue } } finally { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } else { $s = ''; try { $s = [IO.File]::ReadAllText($t).Trim() } catch {}; if ($s -match '^[0-9]+$') { $isStale = $now - [long]$s -gt ${STALE_TAKEOVER} } else { $f = Get-Item -LiteralPath $t -ErrorAction SilentlyContinue; $isStale = $null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_TAKEOVER} }; if ($isStale) { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } }`,
+  // Moves the floor aside and judges the file moved: a fresh one goes back, never over one created since.
+  "function Takeover($now) { $t = Join-Path $dir \"floor.stale.$id\"; Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue; try { [IO.File]::Move($floor, $t) } catch { return }; if (-not (StaleAt $t $now)) { try { [IO.File]::Move($t, $floor) } catch {} }; Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue }",
   `function Fail($code, $what) { [Console]::Error.WriteLine("${FLOOR_MARK} $what"); exit $code }`,
 ].join("; ")
 
@@ -86,7 +90,7 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
     `$limit = ${limit}; $start = Now; $w = Join-Path (Join-Path $dir 'wait') $id`,
     "function Leave($code) { Remove-Item -LiteralPath $w -Force -ErrorAction SilentlyContinue; exit $code }",
     "while ($true) {",
-    "$now = Now; try { [IO.File]::WriteAllText($w, \"$prio $now\") } catch {}",
+    "$now = Now; Put $w \"$prio $now\" $true",
     "$o = Pair $floor; if ($null -ne $o -and $o[0] -eq $id) { Leave 0 }",
     "if (Stale $now) { Takeover $now }",
     "if (-not (Higher $now) -and (Create $floor \"$id $now\")) { Leave 0 }",
@@ -95,11 +99,11 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
   ].join("; "))
   return sh([
     `id=$1 prio=$2 limit=$3 w="$dir/wait/$1" start=$(date +%s)`,
-    `trap 'rm -f "$w"; exit 143' HUP INT TERM`,
+    `trap 'rm -f "$w" "$dir/wait.$id"; exit 143' HUP INT TERM`,
     "while :; do",
-    `  now=$(date +%s); echo "$prio $now" > "$w"`,
+    `  now=$(date +%s); put "$w" "$prio $now"`,
     `  owner; if [ "$o" = "$id" ]; then rm -f "$w"; exit 0; fi`,
-    `  stale "$now" && takeover "$now"`,
+    `  staleat "$now" "$dir/floor" && takeover "$now"`,
     `  if ! higher "$now" && (set -C; echo "$id $now" > "$dir/floor") 2>/dev/null; then rm -f "$w"; exit 0; fi`,
     `  if [ "$limit" -gt 0 ] && [ $((now - start)) -ge "$limit" ]; then rm -f "$w"; exit ${FLOOR_TIMEOUT}; fi`,
     "  sleep 0.2",

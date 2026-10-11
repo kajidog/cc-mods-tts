@@ -115,7 +115,7 @@ export const register: Register = (on, options) => {
     else unplayed.delete(key)
     if (unplayed.size === 0) onAllPlayed()
   }
-  const priorityOf = (clip: Clip) => (clip.step !== undefined && answerSteps.has(clip.step) ? ANSWER_PRIORITY : clip.priority)
+  const priorityOf = (clip: Origin) => (clip.step !== undefined && answerSteps.has(clip.step) ? ANSWER_PRIORITY : clip.priority)
   // Stream text is known to come before a tool call once a later response starts: only then does it wait within the limit.
   // The response still streaming may turn out to be the answer, which is never dropped.
   const isBeforeTool = (clip: Clip) => priorityOf(clip) === STREAM_PRIORITY && clip.step !== undefined && clip.step < stepCount
@@ -132,6 +132,8 @@ export const register: Register = (on, options) => {
   const playbackProcess = new SpeechProcess()
   const floorProcess = new SpeechProcess()
   const sentences = new Channel<Sentence>()
+  // The sentence being synthesized: the next clip to play, whose priority a holder between clips yields by.
+  let synthesizing: Sentence | undefined
   const clips = new Channel<Clip>()
   // Notices are few and fixed: each is synthesized once per load, then replayed at once.
   const cachedNotices = new Map<string, string>()
@@ -272,6 +274,7 @@ export const register: Register = (on, options) => {
           settle(sentence)
           continue
         }
+        synthesizing = sentence
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => sentence.generation === generation
         let isFallback = false
@@ -307,6 +310,7 @@ export const register: Register = (on, options) => {
           await $.process.run(removeFilesCommand([file], isWindows))
           if (isCurrent()) reportError(error)
         } finally {
+          synthesizing = undefined
           if (!isHandedOff) settle(sentence)
         }
       }
@@ -343,11 +347,12 @@ export const register: Register = (on, options) => {
     const giveBackFloor = () => floorOp(async () => {
       await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
     })
-    // The priority of the clip played last: between clips, the floor goes to a session waiting with a higher one.
+    // The priority of the clip played last; between clips, the floor goes to a session waiting with one above
+    // the next clip's, the sentence being synthesized.
     let heldPriority = STREAM_PRIORITY
     const heartbeat = (canYield = false) => floorOp(async () => {
       if (!isHoldingFloor) return
-      const beat = await $.process.run(heartbeatCommand(isWindows, floorName, canYield ? heldPriority : undefined)).catch(() => undefined)
+      const beat = await $.process.run(heartbeatCommand(isWindows, floorName, canYield ? (synthesizing === undefined ? heldPriority : priorityOf(synthesizing)) : undefined)).catch(() => undefined)
       if (beat?.exitCode === FLOOR_LOST || beat?.exitCode === FLOOR_YIELDED) isHoldingFloor = false
     })
 
