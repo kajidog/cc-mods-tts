@@ -11,6 +11,7 @@ import {
   acquireCommand,
   FLOOR_LOST,
   FLOOR_TIMEOUT,
+  FLOOR_YIELDED,
   floorOutcome,
   guardedPlayCommand,
   heartbeatCommand,
@@ -58,6 +59,8 @@ const floorId = atom({ plugin: "tts", key: "floorId" } as const, null as string 
 const SYNTH_TIMEOUT_MS = 300_000
 /** How often a session holding the floor while it synthesizes says it is still there. */
 const FLOOR_HEARTBEAT_MS = 10_000
+/** How often a session holding the floor between clips looks for a session waiting with something more urgent. */
+const FLOOR_YIELD_CHECK_MS = 2_000
 /** A last sentence longer than this is not said after the cut: a long line without a stop is no question. */
 const MAX_TAIL = 300
 
@@ -340,10 +343,12 @@ export const register: Register = (on, options) => {
     const giveBackFloor = () => floorOp(async () => {
       await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
     })
-    const heartbeat = () => floorOp(async () => {
+    // The priority of the clip played last: between clips, the floor goes to a session waiting with a higher one.
+    let heldPriority = STREAM_PRIORITY
+    const heartbeat = (canYield = false) => floorOp(async () => {
       if (!isHoldingFloor) return
-      const beat = await $.process.run(heartbeatCommand(isWindows, floorName)).catch(() => undefined)
-      if (beat?.exitCode === FLOOR_LOST) isHoldingFloor = false
+      const beat = await $.process.run(heartbeatCommand(isWindows, floorName, canYield ? heldPriority : undefined)).catch(() => undefined)
+      if (beat?.exitCode === FLOOR_LOST || beat?.exitCode === FLOOR_YIELDED) isHoldingFloor = false
     })
 
     /** Keeps the floor while more of this session's speech is coming, so no other session cuts in; gives it up once none is. */
@@ -355,12 +360,13 @@ export const register: Register = (on, options) => {
           clips.ready().then(() => false),
           new Promise<boolean>(resolve => {
             onAllPlayed = () => resolve(false)
-            timer = $.clock.after(FLOOR_HEARTBEAT_MS, () => resolve(true))
+            timer = $.clock.after(FLOOR_YIELD_CHECK_MS, () => resolve(true))
           }),
         ])
         onAllPlayed = () => {}
         timer?.cancel()
-        if (isBeat && clips.size === 0 && unplayed.size > 0) await heartbeat()
+        // While the next clip is synthesized, which can take minutes, a more urgent session goes first.
+        if (isBeat && clips.size === 0 && unplayed.size > 0) await heartbeat(true)
       }
     }
 
@@ -421,6 +427,7 @@ export const register: Register = (on, options) => {
             continue
           }
         }
+        heldPriority = priority
         const played = await keepFloor(playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) })))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
         if (floorOutcome(played.code, played.stderr) !== undefined) {

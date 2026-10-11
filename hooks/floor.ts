@@ -42,7 +42,8 @@ const STALE_TAKEOVER = 10
 // Unix: the shared directory is the user's own; `set -C` makes creating the lock file atomic.
 const SH_PRELUDE = [
   `dir="\${TMPDIR:-/tmp}/claude-tts-floor-$(id -u)"`,
-  `mkdir -p "$dir/wait" && chmod 700 "$dir" || exit 1`,
+  // Never through a link another user planted: the directory must be a real one of this user's.
+  `mkdir "$dir" 2>/dev/null; [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] && chmod 700 "$dir" && mkdir -p "$dir/wait" || exit 1`,
   `valid() { case $1 in ''|*[!0-9]*) return 1;; esac; }`,
   // Whether a session other than `$id` waits, freshly, with a priority above `$prio`; drops stale waiters.
   `higher() { for f in "$dir"/wait/*; do [ -f "$f" ] && [ "$f" != "$dir/wait/$id" ] || continue; read -r p t < "$f" 2>/dev/null; valid "$p" && valid "$t" || continue; if [ $(($1 - t)) -gt ${STALE_WAITER} ]; then rm -f "$f"; elif [ "$p" -gt "$prio" ]; then return 0; fi; done; return 1; }`,
@@ -112,10 +113,24 @@ export function releaseCommand(isWindows: boolean, id: string): string[] {
   return sh(`id=$1; owner; [ "$o" = "$id" ] && rm -f "$dir/floor"; exit 0`, [id])
 }
 
-/** Says the holder is still here while it synthesizes; exits FLOOR_LOST when it no longer holds the floor. */
-export function heartbeatCommand(isWindows: boolean, id: string): string[] {
-  if (isWindows) return ps(id, 0, `$o = Pair $floor; if ($null -eq $o -or $o[0] -ne $id) { exit ${FLOOR_LOST} }; Beat (Now); exit 0`)
-  return sh(`id=$1; owner; [ "$o" = "$id" ] || exit ${FLOOR_LOST}; beat "$(date +%s)"`, [id])
+/**
+ * Says the holder is still here; exits FLOOR_LOST when it no longer holds the floor. Given a
+ * priority (between clips, nothing playing), hands the floor to a session waiting with a higher
+ * one instead and exits FLOOR_YIELDED.
+ */
+export function heartbeatCommand(isWindows: boolean, id: string, yieldBelow?: number): string[] {
+  const canYield = yieldBelow !== undefined
+  if (isWindows) return ps(id, yieldBelow ?? 0, [
+    `$o = Pair $floor; if ($null -eq $o -or $o[0] -ne $id) { exit ${FLOOR_LOST} }`,
+    `$now = Now; if (${canYield ? "$true" : "$false"} -and (Higher $now)) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue; exit ${FLOOR_YIELDED} }`,
+    "Beat $now; exit 0",
+  ].join("; "))
+  return sh([
+    `id=$1 prio=$2 yield=$3`,
+    `owner; [ "$o" = "$id" ] || exit ${FLOOR_LOST}`,
+    `now=$(date +%s); if [ "$yield" = 1 ] && higher "$now"; then rm -f "$dir/floor"; exit ${FLOOR_YIELDED}; fi`,
+    `beat "$now"`,
+  ].join("\n"), [id, yieldBelow ?? 0, canYield ? 1 : 0])
 }
 
 /**
