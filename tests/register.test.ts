@@ -599,6 +599,25 @@ test("a quoted last sentence keeps its quote notice after the cut", { options: {
   expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "引用、進めますか？"])
 })
 
+test("an empty skip notice keeps the quote notice for the quote's next sentence, and only for it", { options: { ...options, mode: "final", noticeTable: "" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed("> | a |\n> 引いた文。\n\n> | b |\n\n後。"))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["引用、引いた文。", "後。"])
+})
+
+test("a quoted last sentence up to the tail limit is said after the cut", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。\n> ${"う".repeat(299)}？`))
+  await observed.idle()
+  await settle()
+  // Long sentences reach the engine in pieces.
+  expect(observed.spoken().slice(-2).join("")).toBe(`引用、${"う".repeat(299)}？`)
+})
+
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)

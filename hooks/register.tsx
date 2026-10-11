@@ -26,7 +26,7 @@ import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from
 import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
-import { capLength, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, type Spoken, SpeechSplitter, toSentences } from "./speech-text"
+import { capLength, QUOTE_ENDED, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, type Spoken, SpeechSplitter, toSentences } from "./speech-text"
 
 const HELP = [
   "/tts                   state: on/off, mode, engine, speed, volume",
@@ -68,7 +68,14 @@ const MAX_TAIL = 300
  * How much of one model response has been queued; past the limit the rest is dropped,
  * save its last sentence (`tail`), which `finishResponse` says: it often asks what to do next.
  */
-type Budget = Origin & { spoken: number; isCut: boolean; tail?: string }
+type Budget = Origin & {
+  spoken: number
+  isCut: boolean
+  /** The last sentence past the limit, and the quote notice said before it. */
+  tail?: { text: string; quote: string }
+  /** The quote notice still to be said before what comes next in the quote. */
+  lead?: string
+}
 
 /** Where speech comes from: the streamed response (`step`), and its priority on the floor shared with other sessions. */
 type Origin = { step?: number; priority: number }
@@ -194,22 +201,25 @@ export const register: Register = (on, options) => {
    */
   const enqueue = (spoken: readonly Spoken[], budget?: Budget) => {
     const origin = budget ?? NOTICE
-    // The quote notice, joined to what is said next: "引用、" and the quote's first sentence.
-    let lead = ""
+    // The quote notice, joined to what is said next in the quote: "引用、" and its first sentence.
+    // It waits across calls, as a streamed quote may come in pieces, until said or the quote ends.
+    const quoting: { lead?: string } = budget ?? {}
     for (const text of spoken) {
-      if (text === QUOTED) {
-        lead = config.notices.quote
+      if (text === QUOTED || text === QUOTE_ENDED) {
+        quoting.lead = text === QUOTED ? config.notices.quote : undefined
         continue
       }
       // The code and table notices are the mod's, not the response's: they use no budget and are never the last sentence.
       if (text === SKIPPED_CODE || text === SKIPPED_TABLE) {
         const notice = text === SKIPPED_CODE ? config.notices.code : config.notices.table
-        if (budget?.isCut !== true && notice !== "") say(lead + notice, origin)
-        lead = ""
+        if (budget?.isCut !== true && notice !== "") {
+          say((quoting.lead ?? "") + notice, origin)
+          quoting.lead = undefined
+        }
         continue
       }
-      const quote = lead
-      lead = ""
+      const quote = quoting.lead ?? ""
+      quoting.lead = undefined
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
         const length = Array.from(text).length
         if (!budget.isCut && budget.spoken + length > config.maxCharsPerTurn) {
@@ -218,8 +228,7 @@ export const register: Register = (on, options) => {
         }
         // Each skipped sentence may be the last, so the one that passes the limit counts too.
         if (budget.isCut) {
-          // The tail keeps its quote notice, which, like every notice, the limit does not count.
-          budget.tail = quote + text
+          budget.tail = { text, quote }
           continue
         }
         budget.spoken += length
@@ -256,7 +265,8 @@ export const register: Register = (on, options) => {
 
   /** Ends a response: past the limit, says its last sentence after the cut notice. */
   const finishResponse = (budget: Budget) => {
-    if (budget.tail !== undefined && Array.from(budget.tail).length <= MAX_TAIL) say(budget.tail, budget)
+    // The tail keeps its quote notice, which, like every notice, its length does not count.
+    if (budget.tail !== undefined && Array.from(budget.tail.text).length <= MAX_TAIL) say(budget.tail.quote + budget.tail.text, budget)
     budget.tail = undefined
   }
 

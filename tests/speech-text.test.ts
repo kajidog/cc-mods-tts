@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing"
 
-import { capLength, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, SpeechSplitter, toSentences, toSpeakable } from "../hooks/speech-text"
+import { capLength, QUOTE_ENDED, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, SpeechSplitter, toSentences, toSpeakable } from "../hooks/speech-text"
 
 const feed = (pieces: readonly string[]) => {
   const splitter = new SpeechSplitter()
@@ -34,31 +34,34 @@ describe("SpeechSplitter", () => {
     const text = "前。\n> 引いた文。続き\n> 二行目。\n\n> 1. 別の引用。\n後。"
     for (let at = 1; at < text.length; at++) {
       const { released, rest } = feed([text.slice(0, at), text.slice(at)])
-      expect([...released.flat(), ...rest]).toEqual(["前。", QUOTED, "引いた文。", "続き", "二行目。", QUOTED, "別の引用。", "後。"])
+      expect([...released.flat(), ...rest]).toEqual(["前。", QUOTED, "引いた文。", "続き", "二行目。", QUOTE_ENDED, QUOTED, "別の引用。", QUOTE_ENDED, "後。"])
     }
   })
 
   test("skips tables and code in a quote, and closes the code where the quote ends", async () => {
     expect(toSentences("> | a | b |\n> |---|---|\n> 表の後。")).toEqual([QUOTED, SKIPPED_TABLE, "表の後。"])
     expect(toSentences("> ```\n> secret\n> ```\n> 後。")).toEqual([QUOTED, SKIPPED_CODE, "後。"])
-    expect(toSentences("> ```\n> secret\n\n外。")).toEqual([QUOTED, SKIPPED_CODE, "外。"])
+    expect(toSentences("> ```\n> secret\n\n外。")).toEqual([QUOTED, SKIPPED_CODE, QUOTE_ENDED, "外。"])
     expect(toSentences("```\n> ```\nsecret\n```\n外。")).toEqual([SKIPPED_CODE, "外。"])
     expect(toSentences(">\n> 🎉\n> 本文。")).toEqual([QUOTED, "本文。"])
   })
 
   test("never speaks an HTML comment, across sentences, lines and every chunk boundary", async () => {
-    for (const text of ["前。<!-- 読まない。まだ隠す -->後。", "前。\n<!--\n隠す。\n-->\n後。", "前。<!-- 隠す。\n> 隠す --> 後。"]) {
+    for (const text of ["前。<!-- 読まない。まだ隠す -->後。", "前。\n<!--\n隠す。\n-->\n後。"]) {
       for (let at = 1; at < text.length; at++) {
         const { released, rest } = feed([text.slice(0, at), text.slice(at)])
         expect([...released.flat(), ...rest]).toEqual(["前。", "後。"])
       }
     }
-    // `<!--` in a code span opens no comment.
+    // Past the comment, a line is in its own quote, or none.
+    expect(toSentences("前。<!-- 隠す。\n> 隠す --> 後。")).toEqual(["前。", QUOTED, "後。"])
+    expect(toSentences("> 一つ目。<!--\n隠す\n--> 外。\n> 二つ目。")).toEqual([QUOTED, "一つ目。", QUOTE_ENDED, "外。", QUOTED, "二つ目。"])
+    // `<!--` in a code span opens no comment, however many backticks it has.
     expect(toSentences("`<!--` で始めます。\n次。").at(-1)).toBe("次。")
   })
 
   test("marks a quoted table right after another table as its own", async () => {
-    expect(toSentences("| a |\n|---|\n> | b |\n> |---|\n| c |\n後。")).toEqual([SKIPPED_TABLE, QUOTED, SKIPPED_TABLE, SKIPPED_TABLE, "後。"])
+    expect(toSentences("| a |\n|---|\n> | b |\n> |---|\n| c |\n後。")).toEqual([SKIPPED_TABLE, QUOTED, SKIPPED_TABLE, QUOTE_ENDED, SKIPPED_TABLE, "後。"])
   })
 
   test("keeps list markers silent across every chunk boundary", async () => {
@@ -177,6 +180,8 @@ test("toSpeakable drops common HTML tags, keeps their text, and leaves code and 
   expect(toSpeakable("<kbd>Ctrl</kbd>+<kbd>C</kbd> で止める<br/>次へ")).toBe("Ctrl+C で止める 次へ")
   expect(toSpeakable("<details><summary>詳細</summary> <!-- メモ -->を開く")).toBe("詳細 を開く")
   expect(toSpeakable("`<div>` と a < b > c と Promise<void>")).toBe("<div> と a < b > c と Promise<void>")
+  expect(toSpeakable("``a ` <kbd>`` と <kbd>K</kbd>")).toContain("<kbd>")
+  expect(toSpeakable("``a ` <kbd>`` と <kbd>K</kbd>")).toMatch(/と K$/)
 })
 
 test("capLength keeps surrogate pairs together when splitting long sentences", async () => {

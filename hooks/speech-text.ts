@@ -28,15 +28,23 @@ export const SKIPPED_CODE: unique symbol = Symbol("skipped code")
 export const SKIPPED_TABLE: unique symbol = Symbol("skipped table")
 /** Where a block quote starts, just before its first sentence or notice. */
 export const QUOTED: unique symbol = Symbol("quoted")
+/** Where a quote marked with `QUOTED` ends. */
+export const QUOTE_ENDED: unique symbol = Symbol("quote ended")
 
-/** What a reply turns into for a listener: its sentences, and marks where code or a table was skipped or a quote starts. */
-export type Spoken = string | typeof SKIPPED_CODE | typeof SKIPPED_TABLE | typeof QUOTED
+/** What a reply turns into for a listener: its sentences, and marks where code or a table was skipped or a quote starts or ends. */
+export type Spoken = string | typeof SKIPPED_CODE | typeof SKIPPED_TABLE | typeof QUOTED | typeof QUOTE_ENDED
+
+/** A Markdown code span: as many backticks close it as open it. */
+const CODE_SPAN = String.raw`(?<!\x60)(?<ticks>\x60+)(?!\x60)[\s\S]*?(?<!\x60)\k<ticks>(?!\x60)`
 
 /**
  * HTML comments and the tags answers use, outside code spans: the tags go,
  * their text stays, and `<br>` parts words. `a < b`, `Promise<void>` stay.
  */
-const HTML = /(`[^`]*`)|<!--.*?-->|<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)\b[^<>]*>/gi
+const HTML = new RegExp(
+  String.raw`(${CODE_SPAN})|<!--.*?-->|<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)\b[^<>]*>`,
+  "gi",
+)
 /** A UUID, read as its first 8 characters. */
 const UUID = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi
 /** A long hex string with digits and letters (a hash), read as its first 7 characters; words like `deadbeef` stay. */
@@ -57,14 +65,14 @@ function unquote(text: string, levels = Number.POSITIVE_INFINITY): { depth: numb
 
 /** Where an HTML comment opens in `text`, outside code spans, or may yet open at its end (`<!`); -1 for none. */
 function commentStart(text: string): number {
-  for (const match of text.matchAll(/`[^`]*`|<!--|<!?-?$/g)) if (!match[0].startsWith("`")) return match.index
+  for (const match of text.matchAll(new RegExp(String.raw`${CODE_SPAN}|<!--|<!?-?$`, "g"))) if (!match[0].startsWith("`")) return match.index
   return -1
 }
 
 /** Where an HTML comment opens in `text` and does not close, outside code spans; -1 for none. */
 function unclosedComment(text: string): number {
   let open = -1
-  for (const match of text.matchAll(/`[^`]*`|<!--|-->/g)) {
+  for (const match of text.matchAll(new RegExp(String.raw`${CODE_SPAN}|<!--|-->`, "g"))) {
     if (match[0] === "<!--" && open < 0) open = match.index
     else if (match[0] === "-->") open = -1
   }
@@ -133,7 +141,12 @@ export class SpeechSplitter {
   private line(text: string, isLineEnd: boolean): Spoken[] {
     const isContinued = this.isContinued
     this.isContinued = !isLineEnd
-    if (isContinued || this.isInComment) return this.prose(text)
+    if (isContinued) return this.prose(text)
+    if (this.isInComment) {
+      if (!text.includes("-->")) return []
+      // Past the comment, the line is in its own quote, or none.
+      return [...this.enterQuote(unquote(text).depth), ...this.announce(this.prose(text))]
+    }
 
     const { depth, body } = unquote(text)
     if (this.fence !== undefined) {
@@ -146,12 +159,7 @@ export class SpeechSplitter {
       this.fence = undefined
     }
 
-    if (depth === 0) this.isInQuote = false
-    else if (!this.isInQuote) {
-      this.isInQuote = true
-      this.isQuoteAnnounced = false
-    }
-
+    const ended = this.enterQuote(depth)
     let spoken: Spoken[]
     const marker = FENCE.exec(body)
     if (marker) {
@@ -168,11 +176,28 @@ export class SpeechSplitter {
       spoken = this.prose(body)
     }
 
-    if (this.isInQuote && !this.isQuoteAnnounced && spoken.length > 0) {
-      this.isQuoteAnnounced = true
-      return [QUOTED, ...spoken]
+    return [...ended, ...this.announce(spoken)]
+  }
+
+  /** Moves to a line `depth` quotes deep; marks the end of a quote that was marked. */
+  private enterQuote(depth: number): Spoken[] {
+    if (depth === 0) {
+      const wasAnnounced = this.isInQuote && this.isQuoteAnnounced
+      this.isInQuote = false
+      return wasAnnounced ? [QUOTE_ENDED] : []
     }
-    return spoken
+    if (!this.isInQuote) {
+      this.isInQuote = true
+      this.isQuoteAnnounced = false
+    }
+    return []
+  }
+
+  /** Marks where a quote starts, before the first it says. */
+  private announce(spoken: Spoken[]): Spoken[] {
+    if (!this.isInQuote || this.isQuoteAnnounced || spoken.length === 0) return spoken
+    this.isQuoteAnnounced = true
+    return [QUOTED, ...spoken]
   }
 
   /** The sentences of a line's text, without HTML comments, which may span lines. */
@@ -207,7 +232,7 @@ export function toSpeakable(line: string): string {
     .replace(/^#{1,6}\s+/, "")
     .replace(/^>\s?/, "")
     .replace(LIST_MARKER, "")
-    .replace(HTML, (match, code: string | undefined, tag: string | undefined) =>
+    .replace(HTML, (match, code: string | undefined, _ticks: string | undefined, tag: string | undefined) =>
       code ?? (tag?.toLowerCase() === "br" ? " " : ""),
     )
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
