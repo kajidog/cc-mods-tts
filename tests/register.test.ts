@@ -17,9 +17,14 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   const started = new Promise<void>(resolve => { onStarted = resolve })
   const cancelled: string[] = []
   // The exit code of the floor's commands; every one succeeds unless a test says otherwise.
-  // "block" waits until the command is cancelled.
+  // "block" waits until the command is cancelled, or until `unblock` lets every blocked one succeed.
   // `isMarked` false plays a player that exits 75 or 76 itself, saying nothing of the floor.
-  const floor = { exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0, isMarked: true }
+  const unblocked: (() => void)[] = []
+  const floor = {
+    exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0,
+    isMarked: true,
+    unblock: () => unblocked.splice(0).forEach(resolve => resolve()),
+  }
   on("session.start", () => ({ cwd: "/review" }))
   on("session.cwd", () => ({ value: "/review" }))
   on("env.get", () => ({ value: isWindows ? "Windows_NT" : undefined }))
@@ -47,8 +52,11 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     if (kind !== undefined) {
       const code = floor.exit(kind, e.argv)
       if (code === "block") {
-        await new Promise<void>(resolve => next.signal.addEventListener("abort", resolve))
-        return { value: { code: null, signal: "SIGTERM" } }
+        const isReleased = await new Promise<boolean>(resolve => {
+          next.signal.addEventListener("abort", () => resolve(false))
+          unblocked.push(() => resolve(true))
+        })
+        return { value: isReleased ? { code: 0, signal: null } : { code: null, signal: "SIGTERM" } }
       }
       if (code !== 0 && kind === "play" && floor.isMarked) yield { stream: "stderr" as const, text: "tts-floor: yielded\n" }
       if (code !== 0) return { value: { code, signal: null } }
@@ -317,6 +325,33 @@ test("an earlier turn's last response, ended in an error, is not dropped as text
   // Release the blocked wait before the test ends.
   await $.command.run(command("stop"))
   await observed.idle()
+})
+
+test("an earlier turn's answer still waiting reads on when this turn's answer replaces its earlier text", { options: { ...options, interruptOnPrompt: false } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "acquire" ? "block" : 0)
+  const texts: Record<string, string> = { "first:0": "前の答えです。", "second:0": "途中です。", "second:1": "答えです。" }
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: texts[`${e.turnId}:${e.index}`] ?? "" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  for await (const _ of $.turn.step({ ...step, turnId: "first" })) { /* Another session reads meanwhile. */ }
+  await $.turn.complete({ ...completed("前の答えです。"), turnId: "first" })
+  await observed.idle()
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* Text before a tool call. */ }
+  for await (const _ of $.turn.step({ ...step, turnId: "second", index: 1 })) { /* The answer. */ }
+  await observed.idle()
+  await $.turn.complete({ ...completed("答えです。"), turnId: "second" })
+  await observed.idle()
+  // The other session finishes: the earlier answer, then this one read whole, and nothing of the text before it.
+  observed.floor.exit = () => 0
+  observed.floor.unblock()
+  await observed.idle()
+  await settle()
+  expect(observed.plays()).toEqual(["1", "1"])
 })
 
 test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {

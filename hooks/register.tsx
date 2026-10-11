@@ -218,6 +218,23 @@ export const register: Register = (on, options) => {
   }
 
   /** Whether sentences of a streamed response before `step` are still to be played. */
+  // Responses whose speech is dropped, the rest playing on: the current turn's, giving way to its answer read whole.
+  const skippedSteps = new Set<number>()
+  /** Whether queued speech is still to be said: no stop since, and not of a response given way. */
+  const isLive = (item: Origin & { generation: number }) =>
+    item.generation === generation && !(item.step !== undefined && skippedSteps.has(item.step))
+  // The clip playing or waiting for the floor.
+  let playing: Clip | undefined
+
+  /** Drops the current turn's streamed speech, an earlier turn's answer still playing on, and cuts off what of it is under way. */
+  const skipTurnSpeech = async () => {
+    for (let step = turnFirstStep; step <= stepCount; step++) skippedSteps.add(step)
+    const cuts: Promise<void>[] = []
+    if (synthesizing !== undefined && !isLive(synthesizing)) cuts.push(synthesisProcess.stop())
+    if (playing !== undefined && !isLive(playing)) cuts.push(playbackProcess.stop(), floorProcess.stop())
+    await Promise.all(cuts)
+  }
+
   const hasUnplayedBefore = (step: number) => [...unplayed.keys()].some(earlier => earlier >= turnFirstStep && earlier < step)
 
   /** Reads `text` again from the start, whole: whatever is being read stops. */
@@ -276,13 +293,13 @@ export const register: Register = (on, options) => {
     void (async () => {
       for (;;) {
         const sentence = await sentences.take()
-        if (sentence.generation !== generation) {
+        if (!isLive(sentence)) {
           settle(sentence)
           continue
         }
         synthesizing = sentence
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
-        const isCurrent = () => sentence.generation === generation
+        const isCurrent = () => isLive(sentence)
         let isFallback = false
         let isHandedOff = false
         try {
@@ -405,7 +422,7 @@ export const register: Register = (on, options) => {
     const playClip = async (clip: Clip, player: string) => {
       const play = playCommand(player, clip.file, config.volume, isWindows)
       for (;;) {
-        if (clip.generation !== generation) return
+        if (!isLive(clip)) return
         const priority = priorityOf(clip)
         if (isBeforeTool(clip) && clip.seq <= quietThrough) return
         if (isFloorBroken || !config.sharePlayback) return void (await playbackProcess.read($.process.spawn({ argv: play })))
@@ -421,7 +438,7 @@ export const register: Register = (on, options) => {
           // A wait cancelled just as it took the floor still holds it: it is given up once nothing is left to say.
           if (waited.code === 0) isHoldingFloor = true
           // A stop cancels the wait along with the clip; one killed mid-way may have taken the floor, so give it back.
-          if (clip.generation !== generation) {
+          if (!isLive(clip)) {
             if (waited.code !== 0) await giveBackFloor()
             return
           }
@@ -453,11 +470,14 @@ export const register: Register = (on, options) => {
       for (;;) {
         await holdFloor()
         const clip = await clips.take()
-        if (clip.generation === generation && player !== undefined) {
+        if (isLive(clip) && player !== undefined) {
+          playing = clip
           try {
             await playClip(clip, player)
           } catch (error) {
-            if (clip.generation === generation) reportError(error)
+            if (isLive(clip)) reportError(error)
+          } finally {
+            playing = undefined
           }
         }
         const files = [`${clip.file}.v.wav`]
@@ -719,7 +739,8 @@ export const register: Register = (on, options) => {
         refreshWait()
       }
       if (config.mode === "stream" && e.reason === "answer" && e.answer !== "" && hasUnplayedBefore(stepCount)) {
-        await stop()
+        // Only this turn's speech gives way: an earlier turn's answer still playing reads on before this one.
+        await skipTurnSpeech()
         const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
         enqueue(toSentences(e.answer), budget)
         finishResponse(budget)
