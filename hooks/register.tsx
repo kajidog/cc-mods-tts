@@ -92,6 +92,8 @@ export const register: Register = (on, options) => {
   let stepCount = 0
   // The response the turn's answer came in: its clips are said with the answer's priority.
   let answerStep: number | undefined
+  // The first response of this turn: an earlier turn's speech is never cut off as text before the answer.
+  let turnFirstStep = 1
   const unplayed = new Map<number, number>()
   let seq = 0
   // Stream clips queued up to this `seq` are dropped: one of them waited past the limit for the floor.
@@ -114,6 +116,8 @@ export const register: Register = (on, options) => {
   // Names this session on the floor; kept across a reload in `floorId`.
   let floorName = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
   let releaseFloor = async () => {}
+  // Restarts a wait for the floor made for `step` as stream text, now that it is the answer.
+  let promoteWait = (_step: number) => {}
   const { isEnabled } = config
   let player: string | undefined
   const synthesisProcess = new SpeechProcess()
@@ -198,7 +202,7 @@ export const register: Register = (on, options) => {
   }
 
   /** Whether sentences of a streamed response before `step` are still to be played. */
-  const hasUnplayedBefore = (step: number) => [...unplayed.keys()].some(earlier => earlier > 0 && earlier < step)
+  const hasUnplayedBefore = (step: number) => [...unplayed.keys()].some(earlier => earlier >= turnFirstStep && earlier < step)
 
   /** Reads `text` again from the start, whole: whatever is being read stops. */
   const replay = async (text: string) => {
@@ -304,11 +308,32 @@ export const register: Register = (on, options) => {
     let isHoldingFloor = false
     // Set when the floor cannot be used (no sh, an unwritable temporary folder): play alone, as before.
     let isFloorBroken = false
-    releaseFloor = async () => {
+    // The step whose clip waits for the floor as stream text, and whether that wait is restarted.
+    let waitingStep: number | undefined
+    let isRewaiting = false
+    promoteWait = step => {
+      if (waitingStep !== step) return
+      isRewaiting = true
+      void floorProcess.stop()
+    }
+
+    // Releases and heartbeats run one at a time: a heartbeat never writes the floor back after a release.
+    let floorOps = Promise.resolve()
+    const floorOp = (op: () => Promise<void>) => {
+      const run = floorOps.then(op)
+      floorOps = run.catch(() => undefined)
+      return run
+    }
+    releaseFloor = () => floorOp(async () => {
       if (!isHoldingFloor) return
       isHoldingFloor = false
       await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
-    }
+    })
+    const heartbeat = () => floorOp(async () => {
+      if (!isHoldingFloor) return
+      const beat = await $.process.run(heartbeatCommand(isWindows, floorName)).catch(() => undefined)
+      if (beat?.exitCode === FLOOR_LOST) isHoldingFloor = false
+    })
 
     /** Keeps the floor while more of this session's speech is coming, so no other session cuts in; gives it up once none is. */
     const holdFloor = async () => {
@@ -324,10 +349,27 @@ export const register: Register = (on, options) => {
         ])
         onAllPlayed = () => {}
         timer?.cancel()
-        if (isBeat && clips.size === 0 && unplayed.size > 0) {
-          const beat = await $.process.run(heartbeatCommand(isWindows, floorName)).catch(() => undefined)
-          if (beat?.exitCode === FLOOR_LOST) isHoldingFloor = false
-        }
+        if (isBeat && clips.size === 0 && unplayed.size > 0) await heartbeat()
+      }
+    }
+
+    /** Heartbeats while `playing` runs: a clip longer than the stale limit does not lose the floor. */
+    const keepFloor = async <T,>(playing: Promise<T>): Promise<T> => {
+      let isPlaying = true
+      let timer: { cancel: () => void } | undefined
+      const schedule = () => {
+        timer = $.clock.after(FLOOR_HEARTBEAT_MS, () => {
+          void heartbeat().then(() => {
+            if (isPlaying) schedule()
+          })
+        })
+      }
+      schedule()
+      try {
+        return await playing
+      } finally {
+        isPlaying = false
+        timer?.cancel()
       }
     }
 
@@ -342,9 +384,16 @@ export const register: Register = (on, options) => {
         if (!isHoldingFloor) {
           // Only text before a tool call waits within a limit: a notice or an answer is never dropped.
           const limit = priority === STREAM_PRIORITY ? config.maxWaitSeconds : 0
+          waitingStep = priority === STREAM_PRIORITY ? clip.step : undefined
           const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
+          waitingStep = undefined
           // A stop cancels the wait along with the clip.
           if (clip.generation !== generation) return
+          // The clip became the answer: wait again, with its priority and no limit.
+          if (isRewaiting) {
+            isRewaiting = false
+            continue
+          }
           if (waited.code === FLOOR_TIMEOUT) {
             quietThrough = seq
             return
@@ -356,7 +405,7 @@ export const register: Register = (on, options) => {
           }
           isHoldingFloor = true
         }
-        const played = await playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) }))
+        const played = await keepFloor(playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) })))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
         if (played.code === FLOOR_YIELDED || played.code === FLOOR_LOST) {
           isHoldingFloor = false
@@ -619,6 +668,7 @@ export const register: Register = (on, options) => {
 
   on("turn.start", async ($, e, next) => {
     isTurnMuted = false
+    turnFirstStep = stepCount + 1
     return next(e)
   })
 
@@ -627,7 +677,10 @@ export const register: Register = (on, options) => {
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
       // Stream: text from before the answer still waiting gives way to the answer, read from its start.
       // Once the answer is being read, nothing earlier waits and it reads on: it is never said twice.
-      if (config.mode === "stream" && e.reason === "answer") answerStep = stepCount
+      if (config.mode === "stream" && e.reason === "answer") {
+        answerStep = stepCount
+        promoteWait(stepCount)
+      }
       if (config.mode === "stream" && e.reason === "answer" && e.answer !== "" && hasUnplayedBefore(stepCount)) {
         await stop()
         const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }

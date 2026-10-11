@@ -56,7 +56,8 @@ const ps = (id: string, priority: number, script: string) =>
  * Steps aside while a session waits with a higher priority, and takes the floor from a holder gone stale.
  */
 export function acquireCommand(isWindows: boolean, id: string, priority: number, limitSeconds: number): string[] {
-  const limit = Math.max(0, Math.floor(limitSeconds))
+  // A fraction of a second is still a limit: 0 alone waits without one.
+  const limit = Math.max(0, Math.ceil(limitSeconds))
   if (isWindows) return ps(id, priority, [
     `$limit = ${limit}; $start = Now; $w = Join-Path (Join-Path $dir 'wait') $id`,
     "function Leave($code) { Remove-Item -LiteralPath $w -Force -ErrorAction SilentlyContinue; exit $code }",
@@ -64,6 +65,8 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
     "$now = Now; try { [IO.File]::WriteAllText($w, \"$prio $now\") } catch {}",
     "$o = Pair $floor; if ($null -ne $o -and $o[0] -eq $id) { Leave 0 }",
     `if ($null -ne $o -and $now - [long]$o[1] -gt ${STALE_HOLDER}) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue }`,
+    // A floor its holder never finished writing is judged by its age.
+    `if ($null -eq $o) { $old = Get-Item -LiteralPath $floor -ErrorAction SilentlyContinue; if ($null -ne $old -and ([DateTime]::UtcNow - $old.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue } }`,
     "if (-not (Higher $now)) { try { $file = [IO.File]::Open($floor, 'CreateNew', 'Write'); $bytes = [Text.Encoding]::ASCII.GetBytes(\"$id $now\"); $file.Write($bytes, 0, $bytes.Length); $file.Dispose(); Leave 0 } catch [IO.IOException] {} }",
     `if ($limit -gt 0 -and $now - $start -ge $limit) { Leave ${FLOOR_TIMEOUT} }`,
     "Start-Sleep -Milliseconds 200 }",
@@ -75,6 +78,8 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
     `  now=$(date +%s); echo "$prio $now" > "$w"`,
     `  owner; if [ "$o" = "$id" ]; then rm -f "$w"; exit 0; fi`,
     `  valid "$b" && [ $((now - b)) -gt ${STALE_HOLDER} ] && rm -f "$dir/floor"`,
+    // A floor its holder never finished writing is judged by its age.
+    `  valid "$b" || [ -z "$(find "$dir/floor" -mmin +${Math.ceil(STALE_HOLDER / 60)} 2>/dev/null)" ] || rm -f "$dir/floor"`,
     `  if ! higher "$now" && (set -C; echo "$id $now" > "$dir/floor") 2>/dev/null; then rm -f "$w"; exit 0; fi`,
     `  if [ "$limit" -gt 0 ] && [ $((now - start)) -ge "$limit" ]; then rm -f "$w"; exit ${FLOOR_TIMEOUT}; fi`,
     "  sleep 0.2",
