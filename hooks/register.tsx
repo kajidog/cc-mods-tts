@@ -121,7 +121,10 @@ export const register: Register = (on, options) => {
   // Stream text is known to come before a tool call once a later response starts: only then does it wait within the limit.
   // The response still streaming may turn out to be the answer, which is never dropped.
   const isBeforeTool = (clip: Clip) =>
-    priorityOf(clip) === STREAM_PRIORITY && clip.step !== undefined && (clip.step < stepCount || toolSteps.has(clip.step))
+    priorityOf(clip) === STREAM_PRIORITY &&
+    clip.step !== undefined &&
+    // Only within this turn: an earlier turn's last response (one that ended in an error, say) is no text before a tool call.
+    ((clip.step >= turnFirstStep && clip.step < stepCount) || toolSteps.has(clip.step))
   const waitLimitOf = (clip: Clip) => (isBeforeTool(clip) ? config.maxWaitSeconds : 0)
   // Names this session on the floor; kept across a reload in `floorId`.
   let floorName = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)

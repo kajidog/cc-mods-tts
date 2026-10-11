@@ -297,6 +297,28 @@ test("a subagent's turn starting does not hide the main turn's earlier text from
   expect(observed.spoken()).toEqual(["途中です。", "答えです。"])
 })
 
+test("an earlier turn's last response, ended in an error, is not dropped as text before a tool call", { options: { ...options, maxWaitSeconds: 5, interruptOnPrompt: false } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.turnId === "first" ? "失敗しました。" : "次です。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  for await (const _ of $.turn.step({ ...step, turnId: "first" })) { /* Another session reads meanwhile. */ }
+  await observed.idle()
+  await $.turn.complete({ ...completed("失敗しました。"), turnId: "first", reason: "error" as const })
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* The next turn's first response. */ }
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([["0", "0"]])
+  // Release the blocked wait before the test ends.
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
 test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {
   const observed = host(on)
   observed.floor.exit = kind => (kind === "play" ? 75 : 0)
@@ -353,7 +375,7 @@ test("an earlier turn's answer still waiting is not cut off by the next turn's a
 test("a stop that cancels a wait for the floor gives back a floor the wait may have taken", { options }, async ($, on) => {
   const observed = host(on)
   observed.floor.exit = kind => (kind === "acquire" ? "block" : 0)
-  const releases = () => observed.commands.filter(argv => argv[3] === "tts-floor" && argv[2]?.includes('rm -f "$dir/floor"; exit 0'))
+  const releases = () => observed.commands.filter(argv => argv[3] === "tts-floor" && argv[2]?.includes("drop; exit 0"))
   await $.session.start(start)
   await $.command.run(command("test 待っています。"))
   await observed.idle()

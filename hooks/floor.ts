@@ -57,6 +57,9 @@ const SH_PRELUDE = [
   // Moves the floor aside and judges the file moved, not what was seen before: a floor another waiter
   // took meanwhile is fresh, and goes back, never over one created since.
   `takeover() { t="$dir/floor.stale.$id"; mv "$dir/floor" "$t" 2>/dev/null || return 0; staleat "$1" "$t" || ln "$t" "$dir/floor" 2>/dev/null; rm -f "$t"; }`,
+  // Gives up this session's floor: moves it aside and removes it only if the file moved is this session's;
+  // another's, taken meanwhile (this one stale after a sleep), goes back, never over one created since.
+  `drop() { d="$dir/floor.drop.$id"; mv "$dir/floor" "$d" 2>/dev/null || return 0; o=; read -r o b < "$d" 2>/dev/null; [ "$o" = "$id" ] || ln "$d" "$dir/floor" 2>/dev/null; rm -f "$d"; }`,
   // A waiter's file is replaced whole: a holder never reads it half written.
   `put() { echo "$2" > "$dir/wait.$id" && mv -f "$dir/wait.$id" "$1"; }`,
   `fail() { echo "${FLOOR_MARK} $2" >&2; exit $1; }`,
@@ -74,6 +77,8 @@ const PS_PRELUDE = [
   "function Beat($now) { Put $floor \"$id $now\" $false }",
   `function StaleAt($path, $now) { $o = Pair $path; if ($null -ne $o) { return ($now - [long]$o[1] -gt ${STALE_HOLDER}) }; $f = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue; return ($null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) }`,
   "function Stale($now) { StaleAt $floor $now }",
+  // Gives up this session's floor, removing only a file that is this session's (see drop above).
+  "function Drop { $d = Join-Path $dir \"floor.drop.$id\"; Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue; try { [IO.File]::Move($floor, $d) } catch { return }; $o = Pair $d; if ($null -eq $o -or $o[0] -ne $id) { try { [IO.File]::Move($d, $floor) } catch {} }; Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue }",
   "function Create($path, $text) { try { $file = [IO.File]::Open($path, 'CreateNew', 'Write'); $bytes = [Text.Encoding]::ASCII.GetBytes($text); $file.Write($bytes, 0, $bytes.Length); $file.Dispose(); return $true } catch [IO.IOException] { return $false } }",
   // Moves the floor aside and judges the file moved: a fresh one goes back, never over one created since.
   "function Takeover($now) { $t = Join-Path $dir \"floor.stale.$id\"; Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue; try { [IO.File]::Move($floor, $t) } catch { return }; if (-not (StaleAt $t $now)) { try { [IO.File]::Move($t, $floor) } catch {} }; Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue }",
@@ -118,8 +123,8 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
 
 /** Gives the floor up, if this session holds it, and withdraws a wait for it a cancelled acquire left behind. */
 export function releaseCommand(isWindows: boolean, id: string): string[] {
-  if (isWindows) return ps(id, 0, "Remove-Item -LiteralPath (Join-Path (Join-Path $dir 'wait') $id) -Force -ErrorAction SilentlyContinue; $o = Pair $floor; if ($null -ne $o -and $o[0] -eq $id) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue }; exit 0")
-  return sh(`id=$1; rm -f "$dir/wait/$id"; owner; [ "$o" = "$id" ] && rm -f "$dir/floor"; exit 0`, [id])
+  if (isWindows) return ps(id, 0, "Remove-Item -LiteralPath (Join-Path (Join-Path $dir 'wait') $id) -Force -ErrorAction SilentlyContinue; Drop; exit 0")
+  return sh(`id=$1; rm -f "$dir/wait/$id"; drop; exit 0`, [id])
 }
 
 /**
@@ -131,13 +136,13 @@ export function heartbeatCommand(isWindows: boolean, id: string, yieldBelow?: nu
   const canYield = yieldBelow !== undefined
   if (isWindows) return ps(id, yieldBelow ?? 0, [
     `$o = Pair $floor; if ($null -eq $o -or $o[0] -ne $id) { exit ${FLOOR_LOST} }`,
-    `$now = Now; if (${canYield ? "$true" : "$false"} -and (Higher $now)) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue; exit ${FLOOR_YIELDED} }`,
+    `$now = Now; if (${canYield ? "$true" : "$false"} -and (Higher $now)) { Drop; exit ${FLOOR_YIELDED} }`,
     "Beat $now; exit 0",
   ].join("; "))
   return sh([
     `id=$1 prio=$2 yield=$3`,
     `owner; [ "$o" = "$id" ] || exit ${FLOOR_LOST}`,
-    `now=$(date +%s); if [ "$yield" = 1 ] && higher "$now"; then rm -f "$dir/floor"; exit ${FLOOR_YIELDED}; fi`,
+    `now=$(date +%s); if [ "$yield" = 1 ] && higher "$now"; then drop; exit ${FLOOR_YIELDED}; fi`,
     `beat "$now"`,
   ].join("\n"), [id, yieldBelow ?? 0, canYield ? 1 : 0])
 }
@@ -150,7 +155,7 @@ export function guardedPlayCommand(isWindows: boolean, id: string, priority: num
   if (isWindows) {
     const guard = [
       `$o = Pair $floor; if ($null -eq $o -or $o[0] -ne $id) { Fail ${FLOOR_LOST} 'lost' }`,
-      `$now = Now; if (Higher $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue; Fail ${FLOOR_YIELDED} 'yielded' }`,
+      `$now = Now; if (Higher $now) { Drop; Fail ${FLOOR_YIELDED} 'yielded' }`,
       "Beat $now",
     ].join("; ")
     // A PowerShell player already runs a script: play in the same process rather than start another.
@@ -161,7 +166,7 @@ export function guardedPlayCommand(isWindows: boolean, id: string, priority: num
   return sh([
     `id=$1 prio=$2; shift 2`,
     `owner; [ "$o" = "$id" ] || fail ${FLOOR_LOST} lost`,
-    `now=$(date +%s); if higher "$now"; then rm -f "$dir/floor"; fail ${FLOOR_YIELDED} yielded; fi`,
+    `now=$(date +%s); if higher "$now"; then drop; fail ${FLOOR_YIELDED} yielded; fi`,
     `beat "$now"`,
     `exec "$@"`,
   ].join("\n"), [id, priority, ...play])
