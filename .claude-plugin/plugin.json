@@ -1,6 +1,6 @@
 {
   "name": "tts",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Reads Claude's replies aloud as they stream, sentence by sentence, through VOICEVOX, Irodori-TTS or any command.",
   "author": {
     "name": "kajidog"
