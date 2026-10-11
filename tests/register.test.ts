@@ -572,6 +572,61 @@ test("the code notice uses no budget and is never the last sentence", { options:
   expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "進めますか？"])
 })
 
+test("the table notice is said once per table and uses no budget", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(595)}。\n| a | b |\n|---|---|\n| 1 | 2 |\n終わり。`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["表は省略します。", "終わり。"])
+})
+
+test("the quote notice is joined to the quote's first sentence", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed("前。\n> 引いた文。\n> 続き。\n\n> | a |\n後。"))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["前。", "引用、引いた文。", "続き。", "引用、表は省略します。", "後。"])
+})
+
+test("a quoted last sentence keeps its quote notice after the cut", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。\n> 進めますか？`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "引用、進めますか？"])
+})
+
+test("an empty skip notice keeps the quote notice for the quote's next sentence, and only for it", { options: { ...options, mode: "final", noticeTable: "" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed("> | a |\n> 引いた文。\n\n> | b |\n\n後。"))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["引用、引いた文。", "後。"])
+})
+
+test("a quoted last sentence up to the tail limit is said after the cut", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。\n> ${"う".repeat(299)}？`))
+  await observed.idle()
+  await settle()
+  // Long sentences reach the engine in pieces.
+  expect(observed.spoken().slice(-2).join("")).toBe(`引用、${"う".repeat(299)}？`)
+})
+
+test("the quote notice stays on a later quoted sentence kept as the last", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。\n> 最初。最後ですか？`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "引用、最後ですか？"])
+})
+
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)

@@ -18,6 +18,9 @@ export type Notices = {
   tool: string
   cut: string
   code: string
+  table: string
+  /** Joined to the first sentence of a block quote. */
+  quote: string
 }
 
 const NOTICE_OPTIONS: Record<keyof Notices, string> = {
@@ -31,6 +34,8 @@ const NOTICE_OPTIONS: Record<keyof Notices, string> = {
   tool: "noticeTool",
   cut: "noticeCut",
   code: "noticeCode",
+  table: "noticeTable",
+  quote: "noticeQuote",
 }
 
 /** The settings every engine shares; each engine reads its own in `load`. */
