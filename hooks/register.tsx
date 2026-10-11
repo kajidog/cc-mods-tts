@@ -95,6 +95,8 @@ export const register: Register = (on, options) => {
   let stepCount = 0
   // The responses turns' answers came in: their clips are said with the answer's priority.
   const answerSteps = new Set<number>()
+  // Responses that ended calling a tool: their text is known to come before a tool call as soon as they end.
+  const toolSteps = new Set<number>()
   // The first response of this turn: an earlier turn's speech is never cut off as text before the answer.
   let turnFirstStep = 1
   const unplayed = new Map<number, number>()
@@ -118,7 +120,8 @@ export const register: Register = (on, options) => {
   const priorityOf = (clip: Origin) => (clip.step !== undefined && answerSteps.has(clip.step) ? ANSWER_PRIORITY : clip.priority)
   // Stream text is known to come before a tool call once a later response starts: only then does it wait within the limit.
   // The response still streaming may turn out to be the answer, which is never dropped.
-  const isBeforeTool = (clip: Clip) => priorityOf(clip) === STREAM_PRIORITY && clip.step !== undefined && clip.step < stepCount
+  const isBeforeTool = (clip: Clip) =>
+    priorityOf(clip) === STREAM_PRIORITY && clip.step !== undefined && (clip.step < stepCount || toolSteps.has(clip.step))
   const waitLimitOf = (clip: Clip) => (isBeforeTool(clip) ? config.maxWaitSeconds : 0)
   // Names this session on the floor; kept across a reload in `floorId`.
   let floorName = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
@@ -777,7 +780,12 @@ export const register: Register = (on, options) => {
       queueResponse(splitter.flush())
       if (!isTurnMuted && responseGeneration === generation) finishResponse(budget)
     }
-    return stream.result
+    const result = await stream.result
+    if (result.toolUses.length > 0 && budget.step !== undefined) {
+      toolSteps.add(budget.step)
+      refreshWait()
+    }
+    return result
   })
 }
 

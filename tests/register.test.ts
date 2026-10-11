@@ -210,6 +210,23 @@ test("stream text waits within the limit once a later response shows it comes be
   expect(observed.plays()).toEqual(["1"])
 })
 
+test("stream text of a response that ends calling a tool waits within the limit at once", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* The tool then runs for a while; no later response yet. */ }
+  await observed.idle()
+  await settle()
+  // Whether it began waiting before or after the response ended, it ends up waiting within the limit.
+  expect(observed.waits().at(-1)).toEqual(["0", "5"])
+  expect(observed.plays()).toEqual([])
+})
+
 test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {
   const observed = host(on)
   observed.floor.exit = kind => (kind === "play" ? 75 : 0)

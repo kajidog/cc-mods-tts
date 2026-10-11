@@ -111,10 +111,10 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
   ].join("\n"), [id, priority, limit])
 }
 
-/** Gives the floor up, if this session holds it. */
+/** Gives the floor up, if this session holds it, and withdraws a wait for it a cancelled acquire left behind. */
 export function releaseCommand(isWindows: boolean, id: string): string[] {
-  if (isWindows) return ps(id, 0, "$o = Pair $floor; if ($null -ne $o -and $o[0] -eq $id) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue }; exit 0")
-  return sh(`id=$1; owner; [ "$o" = "$id" ] && rm -f "$dir/floor"; exit 0`, [id])
+  if (isWindows) return ps(id, 0, "Remove-Item -LiteralPath (Join-Path (Join-Path $dir 'wait') $id) -Force -ErrorAction SilentlyContinue; $o = Pair $floor; if ($null -ne $o -and $o[0] -eq $id) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue }; exit 0")
+  return sh(`id=$1; rm -f "$dir/wait/$id"; owner; [ "$o" = "$id" ] && rm -f "$dir/floor"; exit 0`, [id])
 }
 
 /**
