@@ -48,6 +48,9 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { exitCode: 0, stdout, stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on("clock.after", () => new Promise<{ value: undefined }>(() => {}))
+  // The host's clock, which a test moves on by hand.
+  const clock = { now: 1_000_000 }
+  on("clock.now", () => ({ value: clock.now }))
   on("process.spawn", async function* (_, e, next) {
     processes.push(e)
     const kind = floorKind(e.argv)
@@ -72,7 +75,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { code: 0, signal: null } }
   })
   return {
-    commands, processes, started, cancelled, floor,
+    commands, processes, started, cancelled, floor, clock,
     /** Waits until synthesis and playback stop asking the host for anything. */
     idle: async () => {
       for (let seen = -1; seen !== commands.length + processes.length;) {
@@ -354,6 +357,29 @@ test("an earlier turn's answer still waiting reads on when this turn's answer re
   await observed.idle()
   await settle()
   expect(observed.plays()).toEqual(["1", "1"])
+})
+
+test("a limited wait keeps its deadline across waits again after a handover", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  let plays = 0
+  // The first play is handed over, six seconds on: past the limit, the clip waits no more.
+  observed.floor.exit = kind => {
+    if (kind !== "play" || plays++ > 0) return 0
+    observed.clock.now += 6_000
+    return 75
+  }
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([["0", "5"]])
+  expect(observed.plays()).toEqual(["0"])
 })
 
 test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {

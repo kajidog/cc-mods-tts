@@ -258,8 +258,12 @@ export const register: Register = (on, options) => {
     if (player === undefined) $.ui.toast("tts: no audio player found (ffplay, paplay, aplay, afplay, powershell.exe)")
 
     directory = await prepareDirectory($, isWindows)
-    floorName = (await read($, floorId)) ?? floorName
+    const inheritedFloorName = await read($, floorId)
+    floorName = inheritedFloorName ?? floorName
     await update($, floorId, () => floorName)
+    // A reloaded module knows nothing of a floor the last one held, and would neither heartbeat nor release it:
+    // give it back now rather than make other sessions wait for it to go stale.
+    if (inheritedFloorName !== null) await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
     let clipCount = 0
     let lastErrorAt = 0
 
@@ -343,13 +347,13 @@ export const register: Register = (on, options) => {
     let isHoldingFloor = false
     // Set when the floor cannot be used (no sh, an unwritable temporary folder): play alone, as before.
     let isFloorBroken = false
-    // The clip waiting for the floor with the priority and limit it waits with, and whether that wait is restarted.
-    let waiting: { clip: Clip; priority: number; limit: number } | undefined
+    // The clip waiting for the floor with the priority it waits with and whether within a limit, and whether that wait is restarted.
+    let waiting: { clip: Clip; priority: number; isLimited: boolean } | undefined
     let isRewaiting = false
     refreshWait = () => {
       if (waiting === undefined || isRewaiting) return
-      const { clip, priority, limit } = waiting
-      if (priorityOf(clip) === priority && waitLimitOf(clip) === limit) return
+      const { clip, priority, isLimited } = waiting
+      if (priorityOf(clip) === priority && waitLimitOf(clip) > 0 === isLimited) return
       isRewaiting = true
       void floorProcess.stop()
     }
@@ -421,6 +425,8 @@ export const register: Register = (on, options) => {
     /** Plays `clip` on the floor; drops it instead when it is stream text that waited past the limit. */
     const playClip = async (clip: Clip, player: string) => {
       const play = playCommand(player, clip.file, config.volume, isWindows)
+      // When a limited wait gives up: kept across waits again after a handover, so the limit is one in all.
+      let deadline: number | undefined
       for (;;) {
         if (!isLive(clip)) return
         const priority = priorityOf(clip)
@@ -428,8 +434,15 @@ export const register: Register = (on, options) => {
         if (isFloorBroken || !config.sharePlayback) return void (await playbackProcess.read($.process.spawn({ argv: play })))
         if (!isHoldingFloor) {
           // Only text before a tool call waits within a limit: a notice or an answer is never dropped.
-          const limit = waitLimitOf(clip)
-          waiting = { clip, priority, limit }
+          const now = await $.clock.now()
+          if (waitLimitOf(clip) === 0) deadline = undefined
+          else deadline ??= now + waitLimitOf(clip) * 1000
+          const limit = deadline === undefined ? 0 : (deadline - now) / 1000
+          if (deadline !== undefined && limit <= 0) {
+            quietThrough = seq
+            return
+          }
+          waiting = { clip, priority, isLimited: deadline !== undefined }
           const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
           waiting = undefined
           // Cleared on every way out, a stop's included: a flag left set would keep later waits from restarting.
