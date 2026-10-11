@@ -590,6 +590,15 @@ test("the quote notice is joined to the quote's first sentence", { options: { ..
   expect(observed.spoken()).toEqual(["前。", "引用、引いた文。", "続き。", "引用、表は省略します。", "後。"])
 })
 
+test("a quoted last sentence keeps its quote notice after the cut", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。\n> 進めますか？`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "引用、進めますか？"])
+})
+
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)

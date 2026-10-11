@@ -46,6 +46,21 @@ describe("SpeechSplitter", () => {
     expect(toSentences(">\n> 🎉\n> 本文。")).toEqual([QUOTED, "本文。"])
   })
 
+  test("never speaks an HTML comment, across sentences, lines and every chunk boundary", async () => {
+    for (const text of ["前。<!-- 読まない。まだ隠す -->後。", "前。\n<!--\n隠す。\n-->\n後。", "前。<!-- 隠す。\n> 隠す --> 後。"]) {
+      for (let at = 1; at < text.length; at++) {
+        const { released, rest } = feed([text.slice(0, at), text.slice(at)])
+        expect([...released.flat(), ...rest]).toEqual(["前。", "後。"])
+      }
+    }
+    // `<!--` in a code span opens no comment.
+    expect(toSentences("`<!--` で始めます。\n次。").at(-1)).toBe("次。")
+  })
+
+  test("marks a quoted table right after another table as its own", async () => {
+    expect(toSentences("| a |\n|---|\n> | b |\n> |---|\n| c |\n後。")).toEqual([SKIPPED_TABLE, QUOTED, SKIPPED_TABLE, SKIPPED_TABLE, "後。"])
+  })
+
   test("keeps list markers silent across every chunk boundary", async () => {
     for (const marker of ["-", "*", "+", "–", "—", "•", "1.", "12)", "- [x]"]) {
       const text = `  ${marker} 項目（任意）です。\n`

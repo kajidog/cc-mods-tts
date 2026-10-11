@@ -218,7 +218,8 @@ export const register: Register = (on, options) => {
         }
         // Each skipped sentence may be the last, so the one that passes the limit counts too.
         if (budget.isCut) {
-          budget.tail = text
+          // The tail keeps its quote notice, which, like every notice, the limit does not count.
+          budget.tail = quote + text
           continue
         }
         budget.spoken += length

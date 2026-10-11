@@ -55,6 +55,22 @@ function unquote(text: string, levels = Number.POSITIVE_INFINITY): { depth: numb
   return { depth, body }
 }
 
+/** Where an HTML comment opens in `text`, outside code spans, or may yet open at its end (`<!`); -1 for none. */
+function commentStart(text: string): number {
+  for (const match of text.matchAll(/`[^`]*`|<!--|<!?-?$/g)) if (!match[0].startsWith("`")) return match.index
+  return -1
+}
+
+/** Where an HTML comment opens in `text` and does not close, outside code spans; -1 for none. */
+function unclosedComment(text: string): number {
+  let open = -1
+  for (const match of text.matchAll(/`[^`]*`|<!--|-->/g)) {
+    if (match[0] === "<!--" && open < 0) open = match.index
+    else if (match[0] === "-->") open = -1
+  }
+  return open
+}
+
 /**
  * Turns streamed Markdown into speakable sentences as early as possible:
  * complete sentences of the current line are released before its newline
@@ -65,8 +81,11 @@ export class SpeechSplitter {
   private fence: string | undefined
   /** How deep in quotes the open fence is; only a line as deep may close it. */
   private fenceDepth = 0
-  private isInTable = false
+  /** How deep in quotes the table being skipped is; undefined out of a table. */
+  private tableDepth: number | undefined
   private isInQuote = false
+  /** Whether an HTML comment is open; it may span sentences and lines. */
+  private isInComment = false
   private isQuoteAnnounced = false
   /** Whether `partial` is the rest of a line whose start was already released. */
   private isContinued = false
@@ -84,8 +103,10 @@ export class SpeechSplitter {
 
     // Keep unfinished links and URLs whole: punctuation inside them is not a sentence end.
     // Lines that may open a fence or a table, in a quote or not, also wait for their newline.
-    if (this.fence === undefined && !/^[\s>]*[`~|]/.test(this.partial)) {
-      const markup = this.partial.search(/https?:\/\/|!?\[/)
+    // An HTML comment waits for its line: the `!` of `<!--` and sentences in it end nothing.
+    if (this.fence === undefined && !this.isInComment && !/^[\s>]*[`~|]/.test(this.partial)) {
+      const holds = [this.partial.search(/https?:\/\/|!?\[/), commentStart(this.partial)].filter(at => at >= 0)
+      const markup = holds.length === 0 ? -1 : Math.min(...holds)
       // The period in "1. " belongs to the list marker, not a spoken sentence.
       const quote = this.isContinued ? 0 : this.partial.length - unquote(this.partial).body.length
       const start = quote + (LIST_MARKER.exec(this.partial.slice(quote))?.[0].length ?? 0)
@@ -103,15 +124,16 @@ export class SpeechSplitter {
     const sentences = this.line(this.partial, true)
     this.partial = ""
     this.fence = undefined
-    this.isInTable = false
+    this.tableDepth = undefined
     this.isInQuote = false
+    this.isInComment = false
     return sentences
   }
 
   private line(text: string, isLineEnd: boolean): Spoken[] {
     const isContinued = this.isContinued
     this.isContinued = !isLineEnd
-    if (isContinued) return splitSentences(toSpeakable(text))
+    if (isContinued || this.isInComment) return this.prose(text)
 
     const { depth, body } = unquote(text)
     if (this.fence !== undefined) {
@@ -135,14 +157,15 @@ export class SpeechSplitter {
     if (marker) {
       this.fence = marker[1]
       this.fenceDepth = depth
-      this.isInTable = false
+      this.tableDepth = undefined
       spoken = [SKIPPED_CODE]
     } else if (body.trim().startsWith("|")) {
-      spoken = this.isInTable ? [] : [SKIPPED_TABLE]
-      this.isInTable = true
+      // A table in or out of a quote right after another is a table of its own.
+      spoken = this.tableDepth === depth ? [] : [SKIPPED_TABLE]
+      this.tableDepth = depth
     } else {
-      this.isInTable = false
-      spoken = splitSentences(toSpeakable(body))
+      this.tableDepth = undefined
+      spoken = this.prose(body)
     }
 
     if (this.isInQuote && !this.isQuoteAnnounced && spoken.length > 0) {
@@ -150,6 +173,23 @@ export class SpeechSplitter {
       return [QUOTED, ...spoken]
     }
     return spoken
+  }
+
+  /** The sentences of a line's text, without HTML comments, which may span lines. */
+  private prose(text: string): string[] {
+    let rest = text
+    if (this.isInComment) {
+      const close = rest.indexOf("-->")
+      if (close < 0) return []
+      this.isInComment = false
+      rest = rest.slice(close + "-->".length)
+    }
+    const open = unclosedComment(rest)
+    if (open >= 0) {
+      this.isInComment = true
+      rest = rest.slice(0, open)
+    }
+    return splitSentences(toSpeakable(rest))
   }
 }
 
