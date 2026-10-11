@@ -23,7 +23,9 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   const floor = {
     exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0,
     isMarked: true,
-    unblock: () => unblocked.splice(0).forEach(resolve => resolve()),
+    unblock: () => {
+      for (const resolve of unblocked.splice(0)) resolve()
+    },
   }
   on("session.start", () => ({ cwd: "/review" }))
   on("session.cwd", () => ({ value: "/review" }))
