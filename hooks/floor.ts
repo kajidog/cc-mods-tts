@@ -20,11 +20,24 @@ export const FLOOR_TIMEOUT = 3
 export const FLOOR_YIELDED = 75
 /** guardedPlayCommand found the floor taken: this session lost it as stale. Nothing played. */
 export const FLOOR_LOST = 76
+/**
+ * What guardedPlayCommand writes to stderr beside FLOOR_YIELDED or FLOOR_LOST: a player that
+ * exits with the same status is not taken for the floor.
+ */
+export const FLOOR_MARK = "tts-floor:"
+
+/** Whether a guarded play handed the floor over or found it lost, rather than played. */
+export function floorOutcome(code: number | null, stderr: string): "yielded" | "lost" | undefined {
+  if (!stderr.includes(FLOOR_MARK)) return undefined
+  return code === FLOOR_YIELDED ? "yielded" : code === FLOOR_LOST ? "lost" : undefined
+}
 
 /** Seconds without a heartbeat after which a holder counts as gone (a crash, a killed session). */
 const STALE_HOLDER = 60
 /** Seconds after which a waiter that stopped refreshing its file counts as gone. */
 const STALE_WAITER = 5
+/** Seconds after which a takeover a waiter died during counts as gone. */
+const STALE_TAKEOVER = 10
 
 // Unix: the shared directory is the user's own; `set -C` makes creating the lock file atomic.
 const SH_PRELUDE = [
@@ -35,6 +48,12 @@ const SH_PRELUDE = [
   `higher() { for f in "$dir"/wait/*; do [ -f "$f" ] && [ "$f" != "$dir/wait/$id" ] || continue; read -r p t < "$f" 2>/dev/null; valid "$p" && valid "$t" || continue; if [ $(($1 - t)) -gt ${STALE_WAITER} ]; then rm -f "$f"; elif [ "$p" -gt "$prio" ]; then return 0; fi; done; return 1; }`,
   `owner() { o=; b=; [ -f "$dir/floor" ] && read -r o b < "$dir/floor" 2>/dev/null; }`,
   `beat() { echo "$id $1" > "$dir/floor.$id" && mv -f "$dir/floor.$id" "$dir/floor"; }`,
+  // Whether the floor's holder is gone: no heartbeat for a while, or a file it never finished writing that is old.
+  `stale() { owner; if valid "$b"; then [ $(($1 - b)) -gt ${STALE_HOLDER} ]; else [ -n "$(find "$dir/floor" -mmin +${Math.ceil(STALE_HOLDER / 60)} 2>/dev/null)" ]; fi; }`,
+  // Removes a stale floor one waiter at a time, looking again under the takeover lock:
+  // a floor another waiter took meanwhile is fresh, and stays.
+  `takeover() { if (set -C; echo "$1" > "$dir/takeover") 2>/dev/null; then stale "$1" && rm -f "$dir/floor"; rm -f "$dir/takeover"; else read -r t < "$dir/takeover" 2>/dev/null; valid "$t" && [ $(($1 - t)) -gt ${STALE_TAKEOVER} ] && rm -f "$dir/takeover"; fi; }`,
+  `fail() { echo "${FLOOR_MARK} $2" >&2; exit $1; }`,
 ].join("\n")
 
 const PS_PRELUDE = [
@@ -45,6 +64,10 @@ const PS_PRELUDE = [
   "function Pair($path) { try { $s = @([IO.File]::ReadAllText($path).Trim() -split ' '); if ($s.Count -eq 2 -and $s[1] -match '^[0-9]+$') { return ,$s } } catch {}; return $null }",
   `function Higher($now) { foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $dir 'wait') -File -ErrorAction SilentlyContinue)) { if ($f.Name -eq $id) { continue }; $s = Pair $f.FullName; if ($null -eq $s -or $s[0] -notmatch '^[0-9]+$') { continue }; if ($now - [long]$s[1] -gt ${STALE_WAITER}) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } elseif ([int]$s[0] -gt $prio) { return $true } }; return $false }`,
   "function Beat($now) { try { [IO.File]::WriteAllText($floor, \"$id $now\") } catch {} }",
+  `function Stale($now) { $o = Pair $floor; if ($null -ne $o) { return ($now - [long]$o[1] -gt ${STALE_HOLDER}) }; $f = Get-Item -LiteralPath $floor -ErrorAction SilentlyContinue; return ($null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) }`,
+  "function Create($path, $text) { try { $file = [IO.File]::Open($path, 'CreateNew', 'Write'); $bytes = [Text.Encoding]::ASCII.GetBytes($text); $file.Write($bytes, 0, $bytes.Length); $file.Dispose(); return $true } catch [IO.IOException] { return $false } }",
+  `function Takeover($now) { $t = Join-Path $dir 'takeover'; if (Create $t "$now") { try { if (Stale $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue } } finally { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } else { $s = ''; try { $s = [IO.File]::ReadAllText($t).Trim() } catch {}; if ($s -match '^[0-9]+$' -and $now - [long]$s -gt ${STALE_TAKEOVER}) { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } }`,
+  `function Fail($code, $what) { [Console]::Error.WriteLine("${FLOOR_MARK} $what"); exit $code }`,
 ].join("; ")
 
 const sh = (script: string, args: (string | number)[]) => ["sh", "-c", `${SH_PRELUDE}\n${script}`, "tts-floor", ...args.map(String)]
@@ -64,10 +87,8 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
     "while ($true) {",
     "$now = Now; try { [IO.File]::WriteAllText($w, \"$prio $now\") } catch {}",
     "$o = Pair $floor; if ($null -ne $o -and $o[0] -eq $id) { Leave 0 }",
-    `if ($null -ne $o -and $now - [long]$o[1] -gt ${STALE_HOLDER}) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue }`,
-    // A floor its holder never finished writing is judged by its age.
-    `if ($null -eq $o) { $old = Get-Item -LiteralPath $floor -ErrorAction SilentlyContinue; if ($null -ne $old -and ([DateTime]::UtcNow - $old.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue } }`,
-    "if (-not (Higher $now)) { try { $file = [IO.File]::Open($floor, 'CreateNew', 'Write'); $bytes = [Text.Encoding]::ASCII.GetBytes(\"$id $now\"); $file.Write($bytes, 0, $bytes.Length); $file.Dispose(); Leave 0 } catch [IO.IOException] {} }",
+    "if (Stale $now) { Takeover $now }",
+    "if (-not (Higher $now) -and (Create $floor \"$id $now\")) { Leave 0 }",
     `if ($limit -gt 0 -and $now - $start -ge $limit) { Leave ${FLOOR_TIMEOUT} }`,
     "Start-Sleep -Milliseconds 200 }",
   ].join("; "))
@@ -77,9 +98,7 @@ export function acquireCommand(isWindows: boolean, id: string, priority: number,
     "while :; do",
     `  now=$(date +%s); echo "$prio $now" > "$w"`,
     `  owner; if [ "$o" = "$id" ]; then rm -f "$w"; exit 0; fi`,
-    `  valid "$b" && [ $((now - b)) -gt ${STALE_HOLDER} ] && rm -f "$dir/floor"`,
-    // A floor its holder never finished writing is judged by its age.
-    `  valid "$b" || [ -z "$(find "$dir/floor" -mmin +${Math.ceil(STALE_HOLDER / 60)} 2>/dev/null)" ] || rm -f "$dir/floor"`,
+    `  stale "$now" && takeover "$now"`,
     `  if ! higher "$now" && (set -C; echo "$id $now" > "$dir/floor") 2>/dev/null; then rm -f "$w"; exit 0; fi`,
     `  if [ "$limit" -gt 0 ] && [ $((now - start)) -ge "$limit" ]; then rm -f "$w"; exit ${FLOOR_TIMEOUT}; fi`,
     "  sleep 0.2",
@@ -106,8 +125,8 @@ export function heartbeatCommand(isWindows: boolean, id: string): string[] {
 export function guardedPlayCommand(isWindows: boolean, id: string, priority: number, play: string[]): string[] {
   if (isWindows) {
     const guard = [
-      `$o = Pair $floor; if ($null -eq $o -or $o[0] -ne $id) { exit ${FLOOR_LOST} }`,
-      `$now = Now; if (Higher $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue; exit ${FLOOR_YIELDED} }`,
+      `$o = Pair $floor; if ($null -eq $o -or $o[0] -ne $id) { Fail ${FLOOR_LOST} 'lost' }`,
+      `$now = Now; if (Higher $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue; Fail ${FLOOR_YIELDED} 'yielded' }`,
       "Beat $now",
     ].join("; ")
     // A PowerShell player already runs a script: play in the same process rather than start another.
@@ -117,8 +136,8 @@ export function guardedPlayCommand(isWindows: boolean, id: string, priority: num
   }
   return sh([
     `id=$1 prio=$2; shift 2`,
-    `owner; [ "$o" = "$id" ] || exit ${FLOOR_LOST}`,
-    `now=$(date +%s); if higher "$now"; then rm -f "$dir/floor"; exit ${FLOOR_YIELDED}; fi`,
+    `owner; [ "$o" = "$id" ] || fail ${FLOOR_LOST} lost`,
+    `now=$(date +%s); if higher "$now"; then rm -f "$dir/floor"; fail ${FLOOR_YIELDED} yielded; fi`,
     `beat "$now"`,
     `exec "$@"`,
   ].join("\n"), [id, priority, ...play])

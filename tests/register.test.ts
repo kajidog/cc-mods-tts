@@ -18,7 +18,8 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   const cancelled: string[] = []
   // The exit code of the floor's commands; every one succeeds unless a test says otherwise.
   // "block" waits until the command is cancelled.
-  const floor = { exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0 }
+  // `isMarked` false plays a player that exits 75 or 76 itself, saying nothing of the floor.
+  const floor = { exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0, isMarked: true }
   on("session.start", () => ({ cwd: "/review" }))
   on("session.cwd", () => ({ value: "/review" }))
   on("env.get", () => ({ value: isWindows ? "Windows_NT" : undefined }))
@@ -49,6 +50,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
         await new Promise<void>(resolve => next.signal.addEventListener("abort", resolve))
         return { value: { code: null, signal: "SIGTERM" } }
       }
+      if (code !== 0 && kind === "play" && floor.isMarked) yield { stream: "stderr" as const, text: "tts-floor: yielded\n" }
       if (code !== 0) return { value: { code, signal: null } }
     }
     if (blockedInput !== undefined && e.input === blockedInput) {
@@ -185,21 +187,38 @@ test("in stream, an answer already being read reads on and is not said twice", {
   await observed.idle()
 })
 
-test("stream text that waits past the limit for another session is dropped, a notice is not", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+test("stream text waits within the limit once a later response shows it comes before a tool call", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
   const observed = host(on)
-  observed.floor.exit = (kind, argv) => (kind === "acquire" && argv[5] === "0" ? 3 : 0)
+  // Another session reads the whole time: a limited wait gives up, an unlimited one waits on.
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
   on("turn.step", async function* (_, e) {
-    yield { kind: "text", ref: 1, index: 0, text: "一文目。二文目。" }
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "一文目。二文目。" : "答えです。" }
     return { ...stepResult, turnId: e.turnId, index: e.index }
   })
   await $.session.start(start)
-  for await (const _ of $.turn.step(step)) { /* Another session reads the whole time. */ }
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* It may still be the answer: no limit yet. */ }
   await observed.idle()
-  await $.command.run(command("test 通知です。"))
+  expect(observed.waits()).toEqual([["0", "0"]])
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* After a tool call. */ }
+  await observed.idle()
+  await $.turn.complete(completed("答えです。"))
   await observed.idle()
   await settle()
-  // The first wait gives up, and the sentence queued behind it is dropped without waiting again.
-  expect(observed.waits()).toEqual([["0", "5"], ["2", "0"]])
+  // The first sentence gives up within the limit, and the one queued behind it is dropped without waiting.
+  expect(observed.waits()).toEqual([["0", "0"], ["0", "5"], ["0", "0"], ["1", "0"]])
+  expect(observed.plays()).toEqual(["1"])
+})
+
+test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "play" ? 75 : 0)
+  observed.floor.isMarked = false
+  await $.session.start(start)
+  await $.command.run(command("test 一回だけ。"))
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toHaveLength(1)
   expect(observed.plays()).toEqual(["2"])
 })
 
@@ -214,11 +233,11 @@ test("stream text waiting for the floor waits again as the answer once the turn 
   await $.turn.start({ text: "q", turnId: "turn" })
   for await (const _ of $.turn.step(step)) { /* A turn without tool calls, while another session reads. */ }
   await observed.idle()
-  expect(observed.waits()).toEqual([["0", "60"]])
+  expect(observed.waits()).toEqual([["0", "0"]])
   await $.turn.complete(completed("答えです。"))
   await observed.idle()
   await settle()
-  expect(observed.waits()).toEqual([["0", "60"], ["1", "0"]])
+  expect(observed.waits()).toEqual([["0", "0"], ["1", "0"]])
   expect(observed.plays()).toEqual(["1"])
   expect(observed.spoken()).toEqual(["答えです。"])
 })

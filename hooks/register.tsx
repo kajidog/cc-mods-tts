@@ -11,7 +11,7 @@ import {
   acquireCommand,
   FLOOR_LOST,
   FLOOR_TIMEOUT,
-  FLOOR_YIELDED,
+  floorOutcome,
   guardedPlayCommand,
   heartbeatCommand,
   NOTICE_PRIORITY,
@@ -90,8 +90,8 @@ export const register: Register = (on, options) => {
   // Streamed responses are numbered from 1; `unplayed` counts each one's speech not yet played or
   // dropped, under 0 for speech of no response.
   let stepCount = 0
-  // The response the turn's answer came in: its clips are said with the answer's priority.
-  let answerStep: number | undefined
+  // The responses turns' answers came in: their clips are said with the answer's priority.
+  const answerSteps = new Set<number>()
   // The first response of this turn: an earlier turn's speech is never cut off as text before the answer.
   let turnFirstStep = 1
   const unplayed = new Map<number, number>()
@@ -112,12 +112,17 @@ export const register: Register = (on, options) => {
     else unplayed.delete(key)
     if (unplayed.size === 0) onAllPlayed()
   }
-  const priorityOf = (clip: Clip) => (clip.step !== undefined && clip.step === answerStep ? ANSWER_PRIORITY : clip.priority)
+  const priorityOf = (clip: Clip) => (clip.step !== undefined && answerSteps.has(clip.step) ? ANSWER_PRIORITY : clip.priority)
+  // Stream text is known to come before a tool call once a later response starts: only then does it wait within the limit.
+  // The response still streaming may turn out to be the answer, which is never dropped.
+  const isBeforeTool = (clip: Clip) => priorityOf(clip) === STREAM_PRIORITY && clip.step !== undefined && clip.step < stepCount
+  const waitLimitOf = (clip: Clip) => (isBeforeTool(clip) ? config.maxWaitSeconds : 0)
   // Names this session on the floor; kept across a reload in `floorId`.
   let floorName = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
   let releaseFloor = async () => {}
-  // Restarts a wait for the floor made for `step` as stream text, now that it is the answer.
-  let promoteWait = (_step: number) => {}
+  // Restarts a wait for the floor whose clip now has another priority or limit (it became the answer,
+  // or a later response showed it comes before a tool call).
+  let refreshWait = () => {}
   const { isEnabled } = config
   let player: string | undefined
   const synthesisProcess = new SpeechProcess()
@@ -308,11 +313,13 @@ export const register: Register = (on, options) => {
     let isHoldingFloor = false
     // Set when the floor cannot be used (no sh, an unwritable temporary folder): play alone, as before.
     let isFloorBroken = false
-    // The step whose clip waits for the floor as stream text, and whether that wait is restarted.
-    let waitingStep: number | undefined
+    // The clip waiting for the floor with the priority and limit it waits with, and whether that wait is restarted.
+    let waiting: { clip: Clip; priority: number; limit: number } | undefined
     let isRewaiting = false
-    promoteWait = step => {
-      if (waitingStep !== step) return
+    refreshWait = () => {
+      if (waiting === undefined || isRewaiting) return
+      const { clip, priority, limit } = waiting
+      if (priorityOf(clip) === priority && waitLimitOf(clip) === limit) return
       isRewaiting = true
       void floorProcess.stop()
     }
@@ -379,17 +386,17 @@ export const register: Register = (on, options) => {
       for (;;) {
         if (clip.generation !== generation) return
         const priority = priorityOf(clip)
-        if (priority === STREAM_PRIORITY && clip.seq <= quietThrough) return
+        if (isBeforeTool(clip) && clip.seq <= quietThrough) return
         if (isFloorBroken || !config.sharePlayback) return void (await playbackProcess.read($.process.spawn({ argv: play })))
         if (!isHoldingFloor) {
           // Only text before a tool call waits within a limit: a notice or an answer is never dropped.
-          const limit = priority === STREAM_PRIORITY ? config.maxWaitSeconds : 0
-          waitingStep = priority === STREAM_PRIORITY ? clip.step : undefined
+          const limit = waitLimitOf(clip)
+          waiting = { clip, priority, limit }
           const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
-          waitingStep = undefined
+          waiting = undefined
           // A stop cancels the wait along with the clip.
           if (clip.generation !== generation) return
-          // The clip became the answer: wait again, with its priority and no limit.
+          // The clip's priority or limit changed: wait again with the new ones.
           if (isRewaiting) {
             isRewaiting = false
             continue
@@ -407,7 +414,7 @@ export const register: Register = (on, options) => {
         }
         const played = await keepFloor(playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) })))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
-        if (played.code === FLOOR_YIELDED || played.code === FLOOR_LOST) {
+        if (floorOutcome(played.code, played.stderr) !== undefined) {
           isHoldingFloor = false
           continue
         }
@@ -678,8 +685,8 @@ export const register: Register = (on, options) => {
       // Stream: text from before the answer still waiting gives way to the answer, read from its start.
       // Once the answer is being read, nothing earlier waits and it reads on: it is never said twice.
       if (config.mode === "stream" && e.reason === "answer") {
-        answerStep = stepCount
-        promoteWait(stepCount)
+        answerSteps.add(stepCount)
+        refreshWait()
       }
       if (config.mode === "stream" && e.reason === "answer" && e.answer !== "" && hasUnplayedBefore(stepCount)) {
         await stop()
@@ -727,6 +734,8 @@ export const register: Register = (on, options) => {
 
     // Each response has its own budget: text before a tool call does not use up the answer's.
     const budget: Budget = { spoken: 0, isCut: false, step: ++stepCount, priority: STREAM_PRIORITY }
+    // Text of the response before waits as text before a tool call from now on.
+    refreshWait()
     const splitter = new SpeechSplitter()
     const responseGeneration = generation
     const queueResponse = (texts: readonly Spoken[]) => {
