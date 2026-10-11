@@ -698,8 +698,11 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on("turn.start", async ($, e, next) => {
-    isTurnMuted = false
-    turnFirstStep = stepCount + 1
+    // A subagent's turn, should one start here, is no new turn of the main loop: its steps are not counted.
+    if (!("agentId" in e) || e.agentId === undefined) {
+      isTurnMuted = false
+      turnFirstStep = stepCount + 1
+    }
     return next(e)
   })
 
@@ -773,6 +776,11 @@ export const register: Register = (on, options) => {
           block = chunk.index
           queueResponse(splitter.push(chunk.text))
         }
+        // The response's last chunk says it ends calling a tool: its text comes before one from now on.
+        if (chunk.kind === "stop" && chunk.stopReason === "tool_use" && budget.step !== undefined) {
+          toolSteps.add(budget.step)
+          refreshWait()
+        }
         yield chunk
       }
     } finally {
@@ -780,12 +788,7 @@ export const register: Register = (on, options) => {
       queueResponse(splitter.flush())
       if (!isTurnMuted && responseGeneration === generation) finishResponse(budget)
     }
-    const result = await stream.result
-    if (result.toolUses.length > 0 && budget.step !== undefined) {
-      toolSteps.add(budget.step)
-      refreshWait()
-    }
-    return result
+    return stream.result
   })
 }
 

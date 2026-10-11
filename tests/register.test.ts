@@ -215,6 +215,7 @@ test("stream text of a response that ends calling a tool waits within the limit 
   observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
   on("turn.step", async function* (_, e) {
     yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
     return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
   })
   await $.session.start(start)
@@ -232,6 +233,7 @@ test("a stop during a restarted wait leaves later waits free to restart", { opti
   observed.floor.exit = (kind, argv) => (kind === "acquire" && argv[5] === "0" ? "block" : 0)
   on("turn.step", async function* (_, e) {
     yield { kind: "text", ref: 1, index: 0, text: e.turnId === "first" ? "調べます。" : "答えです。" }
+    if (e.turnId === "first") yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
     const toolUses = e.turnId === "first" ? [{ name: "Read", input: {} }] : []
     return { ...stepResult, turnId: e.turnId, index: e.index, toolUses }
   })
@@ -252,6 +254,47 @@ test("a stop during a restarted wait leaves later waits free to restart", { opti
   await settle()
   expect(observed.waits().at(-1)).toEqual(["1", "0"])
   expect(observed.plays()).toEqual(["1"])
+})
+
+test("a response that ends calling a tool is classified even when the consumer stops pulling at its last chunk", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  const stream = $.turn.step(step)
+  await stream.next()
+  await observed.idle()
+  await stream.next()
+  // The last chunk is in; the consumer closes the stream instead of pulling it to its end.
+  await stream.return({ ...stepResult, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" })
+  await observed.idle()
+  await settle()
+  expect(observed.waits().at(-1)).toEqual(["0", "5"])
+})
+
+test("a subagent's turn starting does not hide the main turn's earlier text from its answer", { options }, async ($, on) => {
+  const observed = host(on, "途中です。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "途中です。" : "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.started
+  // The tool is an Agent call: its subagent's turn starts.
+  await $.turn.start({ text: "sub", turnId: "sub", agentId: "sub" } as Parameters<typeof $.turn.start>[0])
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.cancelled).toEqual(["途中です。"])
+  expect(observed.spoken()).toEqual(["途中です。", "答えです。"])
 })
 
 test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {
