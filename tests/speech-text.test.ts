@@ -68,6 +68,7 @@ describe("SpeechSplitter", () => {
     expect(toSentences("> 一。\n続き。\n> 三。")).toEqual([QUOTED, "一。", "続き。", "三。"])
     expect(toSentences("> 一。\n- 項目\n> 三。")).toEqual([QUOTED, "一。", QUOTE_ENDED, "項目", QUOTED, "三。"])
     expect(toSentences("> | a |\n外。")).toEqual([QUOTED, SKIPPED_TABLE, QUOTE_ENDED, "外。"])
+    expect(toSentences("> # 見出し\n外。\n> 二つ目。")).toEqual([QUOTED, "見出し", QUOTE_ENDED, "外。", QUOTED, "二つ目。"])
   })
 
   test("marks a quote whose first streamed piece says nothing", async () => {
@@ -204,6 +205,7 @@ test("toSpeakable drops common HTML tags, keeps their text, and leaves code and 
   expect(toSpeakable("<details><summary>詳細</summary> <!-- メモ -->を開く")).toBe("詳細 を開く")
   expect(toSpeakable("`<div>` と a < b > c と Promise<void>")).toBe("<div> と a < b > c と Promise<void>")
   expect(toSpeakable('<a title="1 > 0">Docs</a> を見る')).toBe("Docs を見る")
+  expect(toSpeakable("<code-block>x</code-block> と <kbd-shortcut>")).toBe("<code-block>x</code-block> と <kbd-shortcut>")
   expect(toSpeakable("``a ` <kbd>`` と <kbd>K</kbd>")).toContain("<kbd>")
   expect(toSpeakable("``a ` <kbd>`` と <kbd>K</kbd>")).toMatch(/と K$/)
 })

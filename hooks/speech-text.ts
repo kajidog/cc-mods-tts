@@ -41,7 +41,7 @@ const CODE_SPAN = String.raw`(?<!\x60)(?<ticks>\x60+)(?!\x60)[\s\S]*?(?<!\x60)\k
  * HTML comments and the tags answers use, outside code spans: the tags go,
  * their text stays, and `<br>` parts words. `a < b`, `Promise<void>` stay.
  */
-const TAG = String.raw`<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)\b`
+const TAG = String.raw`<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)(?=[\s/>])`
 const HTML = new RegExp(
   // Quoted attribute values may hold `>`: <a title="1 > 0">.
   String.raw`(${CODE_SPAN})|<!--.*?-->|${TAG}(?:"[^"]*"|'[^']*'|[^<>"'])*>`,
@@ -190,7 +190,7 @@ export class SpeechSplitter {
     } else {
       this.tableDepth = undefined
       spoken = this.prose(body)
-      this.isQuoteParagraph = this.isInQuote && body.trim() !== ""
+      this.isQuoteParagraph = this.isInQuote && body.trim() !== "" && !BLOCK_START.test(body)
     }
 
     return [...ended, ...this.announce(spoken)]
