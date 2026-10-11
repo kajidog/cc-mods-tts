@@ -219,7 +219,6 @@ export const register: Register = (on, options) => {
         continue
       }
       const quote = quoting.lead ?? ""
-      quoting.lead = undefined
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
         const length = Array.from(text).length
         if (!budget.isCut && budget.spoken + length > config.maxCharsPerTurn) {
@@ -227,6 +226,7 @@ export const register: Register = (on, options) => {
           say(config.notices.cut, origin)
         }
         // Each skipped sentence may be the last, so the one that passes the limit counts too.
+        // The quote notice stays for the quote's later sentences, any of which may be the last.
         if (budget.isCut) {
           budget.tail = { text, quote }
           continue
@@ -234,6 +234,7 @@ export const register: Register = (on, options) => {
         budget.spoken += length
       }
       say(quote + text, origin)
+      quoting.lead = undefined
     }
   }
 

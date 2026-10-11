@@ -41,8 +41,10 @@ const CODE_SPAN = String.raw`(?<!\x60)(?<ticks>\x60+)(?!\x60)[\s\S]*?(?<!\x60)\k
  * HTML comments and the tags answers use, outside code spans: the tags go,
  * their text stays, and `<br>` parts words. `a < b`, `Promise<void>` stay.
  */
+const TAG = String.raw`<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)\b`
 const HTML = new RegExp(
-  String.raw`(${CODE_SPAN})|<!--.*?-->|<\/?(br|kbd|details|summary|sup|sub|b|i|u|s|em|strong|mark|small|span|div|p|a|img|code|pre|ul|ol|li|hr|center)\b[^<>]*>`,
+  // Quoted attribute values may hold `>`: <a title="1 > 0">.
+  String.raw`(${CODE_SPAN})|<!--.*?-->|${TAG}(?:"[^"]*"|'[^']*'|[^<>"'])*>`,
   "gi",
 )
 /** A UUID, read as its first 8 characters. */
@@ -51,6 +53,8 @@ const UUID = /\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/gi
 const HASH = /\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,}\b/gi
 const FENCE = /^\s*(`{3,}|~{3,})(.*)$/
 const QUOTE_MARKER = /^[ \t]*>[ \t]?/
+/** A line that starts a block of its own, so it never lazily continues a quote's paragraph. */
+const BLOCK_START = /^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|`{3,}|~{3,}|\||[-*_]{3,}\s*$)/
 
 /** Takes up to `levels` quote markers off the start of a line. */
 function unquote(text: string, levels = Number.POSITIVE_INFINITY): { depth: number; body: string } {
@@ -63,9 +67,12 @@ function unquote(text: string, levels = Number.POSITIVE_INFINITY): { depth: numb
   return { depth, body }
 }
 
-/** Where an HTML comment opens in `text`, outside code spans, or may yet open at its end (`<!`); -1 for none. */
-function commentStart(text: string): number {
-  for (const match of text.matchAll(new RegExp(String.raw`${CODE_SPAN}|<!--|<!?-?$`, "g"))) if (!match[0].startsWith("`")) return match.index
+/**
+ * Where an HTML comment or tag opens in `text`, outside code spans, or a comment may yet
+ * open at its end (`<!`); -1 for none. Punctuation in either ends no sentence.
+ */
+function markupStart(text: string): number {
+  for (const match of text.matchAll(new RegExp(String.raw`${CODE_SPAN}|<!--|<!?-?$|${TAG}`, "gi"))) if (!match[0].startsWith("`")) return match.index
   return -1
 }
 
@@ -95,6 +102,8 @@ export class SpeechSplitter {
   /** Whether an HTML comment is open; it may span sentences and lines. */
   private isInComment = false
   private isQuoteAnnounced = false
+  /** Whether the last line was a quote's paragraph, which a line without `>` may continue. */
+  private isQuoteParagraph = false
   /** Whether `partial` is the rest of a line whose start was already released. */
   private isContinued = false
 
@@ -111,9 +120,9 @@ export class SpeechSplitter {
 
     // Keep unfinished links and URLs whole: punctuation inside them is not a sentence end.
     // Lines that may open a fence or a table, in a quote or not, also wait for their newline.
-    // An HTML comment waits for its line: the `!` of `<!--` and sentences in it end nothing.
+    // HTML comments and tags wait for their line: the `!` of `<!--` and sentences in them end nothing.
     if (this.fence === undefined && !this.isInComment && !/^[\s>]*[`~|]/.test(this.partial)) {
-      const holds = [this.partial.search(/https?:\/\/|!?\[/), commentStart(this.partial)].filter(at => at >= 0)
+      const holds = [this.partial.search(/https?:\/\/|!?\[/), markupStart(this.partial)].filter(at => at >= 0)
       const markup = holds.length === 0 ? -1 : Math.min(...holds)
       // The period in "1. " belongs to the list marker, not a spoken sentence.
       const quote = this.isContinued ? 0 : this.partial.length - unquote(this.partial).body.length
@@ -134,6 +143,7 @@ export class SpeechSplitter {
     this.fence = undefined
     this.tableDepth = undefined
     this.isInQuote = false
+    this.isQuoteParagraph = false
     this.isInComment = false
     return sentences
   }
@@ -141,7 +151,8 @@ export class SpeechSplitter {
   private line(text: string, isLineEnd: boolean): Spoken[] {
     const isContinued = this.isContinued
     this.isContinued = !isLineEnd
-    if (isContinued) return this.prose(text)
+    // The line's start may have said nothing yet ("> 🎉！"), so its quote is still to be marked.
+    if (isContinued) return this.announce(this.prose(text))
     if (this.isInComment) {
       if (!text.includes("-->")) return []
       // Past the comment, the line is in its own quote, or none.
@@ -159,7 +170,10 @@ export class SpeechSplitter {
       this.fence = undefined
     }
 
-    const ended = this.enterQuote(depth)
+    // A line without `>` right after a quote's paragraph lazily continues it.
+    const isLazy = depth === 0 && this.isQuoteParagraph && text.trim() !== "" && !BLOCK_START.test(text)
+    const ended = isLazy ? [] : this.enterQuote(depth)
+    this.isQuoteParagraph = false
     let spoken: Spoken[]
     const marker = FENCE.exec(body)
     if (marker) {
@@ -171,9 +185,12 @@ export class SpeechSplitter {
       // A table in or out of a quote right after another is a table of its own.
       spoken = this.tableDepth === depth ? [] : [SKIPPED_TABLE]
       this.tableDepth = depth
+      // The row is not said, but a comment it opens hides the lines after it.
+      this.prose(body)
     } else {
       this.tableDepth = undefined
       spoken = this.prose(body)
+      this.isQuoteParagraph = this.isInQuote && body.trim() !== ""
     }
 
     return [...ended, ...this.announce(spoken)]
@@ -183,6 +200,7 @@ export class SpeechSplitter {
   private enterQuote(depth: number): Spoken[] {
     if (depth === 0) {
       const wasAnnounced = this.isInQuote && this.isQuoteAnnounced
+      this.isQuoteParagraph = false
       this.isInQuote = false
       return wasAnnounced ? [QUOTE_ENDED] : []
     }

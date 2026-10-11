@@ -618,6 +618,15 @@ test("a quoted last sentence up to the tail limit is said after the cut", { opti
   expect(observed.spoken().slice(-2).join("")).toBe(`引用、${"う".repeat(299)}？`)
 })
 
+test("the quote notice stays on a later quoted sentence kept as the last", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(`${"あ".repeat(599)}。${"い".repeat(30)}。\n> 最初。最後ですか？`))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken().slice(-2)).toEqual(["途中を省略します。", "引用、最後ですか？"])
+})
+
 test("test speech formats lists, brackets and paths while preserving newlines", { options }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)

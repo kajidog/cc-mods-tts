@@ -31,7 +31,7 @@ describe("SpeechSplitter", () => {
   })
 
   test("marks a quote once before its first sentence, across every chunk boundary", async () => {
-    const text = "前。\n> 引いた文。続き\n> 二行目。\n\n> 1. 別の引用。\n後。"
+    const text = "前。\n> 引いた文。続き\n> 二行目。\n\n> 1. 別の引用。\n\n後。"
     for (let at = 1; at < text.length; at++) {
       const { released, rest } = feed([text.slice(0, at), text.slice(at)])
       expect([...released.flat(), ...rest]).toEqual(["前。", QUOTED, "引いた文。", "続き", "二行目。", QUOTE_ENDED, QUOTED, "別の引用。", QUOTE_ENDED, "後。"])
@@ -62,6 +62,29 @@ describe("SpeechSplitter", () => {
 
   test("marks a quoted table right after another table as its own", async () => {
     expect(toSentences("| a |\n|---|\n> | b |\n> |---|\n| c |\n後。")).toEqual([SKIPPED_TABLE, QUOTED, SKIPPED_TABLE, QUOTE_ENDED, SKIPPED_TABLE, "後。"])
+  })
+
+  test("keeps a lazily continued paragraph in its quote", async () => {
+    expect(toSentences("> 一。\n続き。\n> 三。")).toEqual([QUOTED, "一。", "続き。", "三。"])
+    expect(toSentences("> 一。\n- 項目\n> 三。")).toEqual([QUOTED, "一。", QUOTE_ENDED, "項目", QUOTED, "三。"])
+    expect(toSentences("> | a |\n外。")).toEqual([QUOTED, SKIPPED_TABLE, QUOTE_ENDED, "外。"])
+  })
+
+  test("marks a quote whose first streamed piece says nothing", async () => {
+    const { released, rest } = feed(["> 🎉！", "本文。"])
+    expect([...released.flat(), ...rest]).toEqual([QUOTED, "本文。"])
+  })
+
+  test("hides a comment opened in a table row", async () => {
+    expect(toSentences("| a <!--\nsecret.\n--> |\n後。")).toEqual([SKIPPED_TABLE, "後。"])
+  })
+
+  test("never splits inside an HTML tag, across every chunk boundary", async () => {
+    const text = '前。<span aria-label="完了。次">見える。</span>\n'
+    for (let at = 1; at < text.length; at++) {
+      const { released, rest } = feed([text.slice(0, at), text.slice(at)])
+      expect([...released.flat(), ...rest]).toEqual(["前。", "見える。"])
+    }
   })
 
   test("keeps list markers silent across every chunk boundary", async () => {
@@ -180,6 +203,7 @@ test("toSpeakable drops common HTML tags, keeps their text, and leaves code and 
   expect(toSpeakable("<kbd>Ctrl</kbd>+<kbd>C</kbd> で止める<br/>次へ")).toBe("Ctrl+C で止める 次へ")
   expect(toSpeakable("<details><summary>詳細</summary> <!-- メモ -->を開く")).toBe("詳細 を開く")
   expect(toSpeakable("`<div>` と a < b > c と Promise<void>")).toBe("<div> と a < b > c と Promise<void>")
+  expect(toSpeakable('<a title="1 > 0">Docs</a> を見る')).toBe("Docs を見る")
   expect(toSpeakable("``a ` <kbd>`` と <kbd>K</kbd>")).toContain("<kbd>")
   expect(toSpeakable("``a ` <kbd>`` と <kbd>K</kbd>")).toMatch(/と K$/)
 })
