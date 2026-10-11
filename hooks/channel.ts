@@ -13,6 +13,11 @@ export class Channel<T> {
     this.waiter = undefined
   }
 
+  /** Waits until an item is queued, taking none. */
+  async ready(): Promise<void> {
+    while (this.items.length === 0) await new Promise<void>(resolve => (this.waiter = resolve))
+  }
+
   async take(): Promise<T> {
     while (this.items.length === 0) await new Promise<void>(resolve => (this.waiter = resolve))
     return this.items.shift() as T

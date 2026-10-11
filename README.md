@@ -97,7 +97,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 | モード | 読むもの |
 |---|---|
-| `stream`（既定） | 返答をストリーミング中に一文ずつ |
+| `stream`（既定） | 返答をストリーミング中に一文ずつ。最終回答が届いた時点でツール前の文をまだ読んでいたら、それを止めて最終回答を頭から読む |
 | `final` | ターン終了時に最終的な返答だけ（途中のツール前の文は読まない） |
 | `notify` | 短い通知だけ：「完了しました」「エラーで止まりました」など |
 
@@ -111,6 +111,15 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | その他のツールの許可 | ツールの許可をお願いします。 |
 
 許可は `classic.PermissionRequest`（ダイアログを出すときに発火）で拾うので、ルールや auto モードで自動判定された呼び出しでは鳴らない。通知の音声は初回だけ合成し、以降は使い回す。
+
+### 複数のセッション
+
+同じマシンで複数の Claude Code セッションが読み上げても、音声は重なりません。一時フォルダの共有ロックを取ったセッションだけが再生し、ほかのセッションは順番を待ちます。追加のセットアップは要りません。`/config` の `TTS: Take turns with other sessions` をオフにすると、この仕組みを使わずにすぐ再生します。
+
+- 優先度は 通知・ダイアログ・`/tts` コマンド ＞ 最終回答 ＞ ツール前の発言 の順です。読んでいるセッションは、文の切れ目でより優先度の高い待ち手に順番を譲ります（読みかけの文は最後まで読みます）。
+- 待ち時間の上限（`maxWaitSeconds`）を超えたら捨てるのは、ツール前の発言だけです。通知と最終回答は、待っても必ず読みます。
+- ダイアログや `/tts stop` で止まるのは、そのセッションの読み上げだけです。ほかのセッションの再生には影響しません。
+- WSL 内のセッションと Windows ネイティブのセッションは、別々のロックを使います（同時に動かすと重なることがあります）。
 
 停止すると Mod 側の合成リクエストも中断します。ただし、TTS サーバーが切断後も計算を続ける場合、その計算の終了までは次の合成が待たされることがあります。
 
@@ -135,6 +144,8 @@ WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由�
 | TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
 | TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
 | TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「途中を省略します。」と言って残りを飛ばし、応答の最後の1文だけ読む。0 で無制限 | 600 |
+| TTS: Take turns with other sessions（`sharePlayback`） | 複数のセッションが読み上げるとき、1つずつ順番に再生する。オフにすると各セッションがすぐに再生する（音声が重なることがある） | オン |
+| TTS: Max wait for other sessions（`maxWaitSeconds`） | ほかのセッションが読み上げている間、ツール前の発言を待たせる最大秒数。超えたら捨てる。通知と最終回答は常に待って読む。0 で無制限 | 60 |
 | TTS: Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
 | TTS: Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
 | TTS: Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
@@ -167,18 +178,10 @@ Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限
 - Windows ネイティブ: Windows PowerShell（`powershell.exe`、一時ファイルの管理と再生に使用）
 - 再生: `ffplay` / `paplay` / `aplay` / `afplay` / `powershell.exe`（Windows・WSL）のいずれか（`player: auto` で自動選択）
 
-## エンジンを追加する
-
-エンジンは `hooks/engines/` に1ファイルずつある（`irodori.ts` / `voicevox.ts` / `command.ts`）。追加するには:
-
-1. `hooks/engines/<name>.ts` に `Engine`（`engine.ts` の型）を書く。`load(options, isWindows)` で自分の設定を読み、`synthesis(text, out)` で wav を `out` に書くコマンド列を返す。声の一覧があれば `voices` も
-2. `hooks/engines/index.ts` の `ENGINES` に足す
-3. `.claude-plugin/plugin.json` の `userConfig.engine.options` に名前を足し、そのエンジンの設定項目を追加する
-
 ## 開発
 
 <details>
-<summary>開発者向け: lint・テスト・リリースの手順</summary>
+<summary>開発者向け: エンジンの追加・lint・テスト・リリースの手順</summary>
 
 ```sh
 npm install
@@ -191,6 +194,16 @@ npm run check  # lint・validate・型チェック・test をまとめて実行
 CI（`.github/workflows/ci.yml`）は main への push と PR で lint を実行し、Linux・Windows で validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
 
 API は early access のため、Claude Code の更新で変わることがある（CI で確認しているバージョン: 2.1.296）。
+
+
+### エンジンを追加する
+
+エンジンは `hooks/engines/` に1ファイルずつある（`irodori.ts` / `voicevox.ts` / `command.ts`）。追加するには:
+
+1. `hooks/engines/<name>.ts` に `Engine`（`engine.ts` の型）を書く。`load(options, isWindows)` で自分の設定を読み、`synthesis(text, out)` で wav を `out` に書くコマンド列を返す。声の一覧があれば `voices` も
+2. `hooks/engines/index.ts` の `ENGINES` に足す
+3. `.claude-plugin/plugin.json` の `userConfig.engine.options` に名前を足し、そのエンジンの設定項目を追加する
+
 
 ### 変更履歴とリリース
 

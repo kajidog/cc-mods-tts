@@ -6,6 +6,18 @@ import type { Picker, Setting } from "../types"
 import { Channel } from "./channel"
 import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
 import { DIALOG_TOOLS, dialogSpeech } from "./dialog-text"
+import {
+  ANSWER_PRIORITY,
+  acquireCommand,
+  FLOOR_LOST,
+  FLOOR_TIMEOUT,
+  FLOOR_YIELDED,
+  guardedPlayCommand,
+  heartbeatCommand,
+  NOTICE_PRIORITY,
+  releaseCommand,
+  STREAM_PRIORITY,
+} from "./floor"
 import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { lastAnswer, replayBlocks, replayOptions } from "./replay"
@@ -39,9 +51,13 @@ const PICKER_PAGE_SIZE = 64
 const picker = atom({ plugin: "tts", key: "picker" } as const, null as Picker | null)
 // Survives a reload so the next module can remove the old module's audio files.
 const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, null as string | null)
+// Survives a reload so the next module holds the floor the last one held.
+const floorId = atom({ plugin: "tts", key: "floorId" } as const, null as string | null)
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
+/** How often a session holding the floor while it synthesizes says it is still there. */
+const FLOOR_HEARTBEAT_MS = 10_000
 /** A last sentence longer than this is not said after the cut: a long line without a stop is no question. */
 const MAX_TAIL = 300
 
@@ -49,11 +65,15 @@ const MAX_TAIL = 300
  * How much of one model response has been queued; past the limit the rest is dropped,
  * save its last sentence (`tail`), which `finishResponse` says: it often asks what to do next.
  */
-type Budget = { spoken: number; isCut: boolean; tail?: string }
+type Budget = Origin & { spoken: number; isCut: boolean; tail?: string }
 
-/** `cacheAs` keeps the synthesized clip at that path for the next time. */
-type Sentence = { text: string; generation: number; cacheAs?: string }
-type Clip = { file: string; generation: number; isCached?: boolean }
+/** Where speech comes from: the streamed response (`step`), and its priority on the floor shared with other sessions. */
+type Origin = { step?: number; priority: number }
+const NOTICE: Origin = { priority: NOTICE_PRIORITY }
+
+/** `cacheAs` keeps the synthesized clip at that path for the next time; `seq` numbers speech in the order queued. */
+type Sentence = Origin & { text: string; generation: number; seq: number; cacheAs?: string }
+type Clip = Origin & { file: string; generation: number; seq: number; isCached?: boolean }
 
 export const register: Register = (on, options) => {
   let isWindows = false
@@ -67,10 +87,38 @@ export const register: Register = (on, options) => {
   // `generation` moves on at every stop: queued work of an older one is dropped.
   let generation = 0
   let isTurnMuted = false
+  // Streamed responses are numbered from 1; `unplayed` counts each one's speech not yet played or
+  // dropped, under 0 for speech of no response.
+  let stepCount = 0
+  // The response the turn's answer came in: its clips are said with the answer's priority.
+  let answerStep: number | undefined
+  const unplayed = new Map<number, number>()
+  let seq = 0
+  // Stream clips queued up to this `seq` are dropped: one of them waited past the limit for the floor.
+  let quietThrough = 0
+  // Called once nothing is left to play: a session holding the floor gives it up.
+  let onAllPlayed = () => {}
+  const track = (origin: Origin) => {
+    const key = origin.step ?? 0
+    unplayed.set(key, (unplayed.get(key) ?? 0) + 1)
+    return ++seq
+  }
+  const settle = (origin: Origin) => {
+    const key = origin.step ?? 0
+    const count = (unplayed.get(key) ?? 1) - 1
+    if (count > 0) unplayed.set(key, count)
+    else unplayed.delete(key)
+    if (unplayed.size === 0) onAllPlayed()
+  }
+  const priorityOf = (clip: Clip) => (clip.step !== undefined && clip.step === answerStep ? ANSWER_PRIORITY : clip.priority)
+  // Names this session on the floor; kept across a reload in `floorId`.
+  let floorName = Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
+  let releaseFloor = async () => {}
   const { isEnabled } = config
   let player: string | undefined
   const synthesisProcess = new SpeechProcess()
   const playbackProcess = new SpeechProcess()
+  const floorProcess = new SpeechProcess()
   const sentences = new Channel<Sentence>()
   const clips = new Channel<Clip>()
   // Notices are few and fixed: each is synthesized once per load, then replayed at once.
@@ -102,21 +150,22 @@ export const register: Register = (on, options) => {
   /** Invalidates queued speech and closes the active synthesis and playback streams. */
   const stop = async () => {
     generation += 1
-    await Promise.all([synthesisProcess.stop(), playbackProcess.stop()])
+    await Promise.all([synthesisProcess.stop(), playbackProcess.stop(), floorProcess.stop()])
   }
 
   /** Queues `text` to be said next; called right after a stop, it plays first. */
   const queueNotice = (text: string) => {
     if (text === "") return
     const cached = cachedNotices.get(text)
-    if (cached !== undefined) return clips.push({ file: cached, generation, isCached: true })
-    sentences.push({ text, generation, cacheAs: `${directory}/notice-${noticeCount++}.wav` })
+    if (cached !== undefined) return clips.push({ ...NOTICE, file: cached, generation, seq: track(NOTICE), isCached: true })
+    sentences.push({ ...NOTICE, text, generation, seq: track(NOTICE), cacheAs: `${directory}/notice-${noticeCount++}.wav` })
   }
 
   /** Queues `text` for synthesis, in pieces an engine takes. */
-  const say = (text: string) => {
+  const say = (text: string, origin: Origin) => {
     if (text === "") return
-    for (const piece of capLength(text)) sentences.push({ text: piece, generation })
+    const { step, priority } = origin
+    for (const piece of capLength(text)) sentences.push({ text: piece, generation, step, priority, seq: track(origin) })
   }
 
   /**
@@ -124,17 +173,18 @@ export const register: Register = (on, options) => {
    * (never reading half of one) and says once that the rest is skipped.
    */
   const enqueue = (spoken: readonly Spoken[], budget?: Budget) => {
+    const origin = budget ?? NOTICE
     for (const text of spoken) {
       // The code notice is the mod's, not the response's: it uses no budget and is never the last sentence.
       if (text === SKIPPED_CODE) {
-        if (budget?.isCut !== true) say(config.notices.code)
+        if (budget?.isCut !== true) say(config.notices.code, origin)
         continue
       }
       if (budget !== undefined && config.maxCharsPerTurn > 0) {
         const length = Array.from(text).length
         if (!budget.isCut && budget.spoken + length > config.maxCharsPerTurn) {
           budget.isCut = true
-          say(config.notices.cut)
+          say(config.notices.cut, origin)
         }
         // Each skipped sentence may be the last, so the one that passes the limit counts too.
         if (budget.isCut) {
@@ -143,9 +193,12 @@ export const register: Register = (on, options) => {
         }
         budget.spoken += length
       }
-      say(text)
+      say(text, origin)
     }
   }
+
+  /** Whether sentences of a streamed response before `step` are still to be played. */
+  const hasUnplayedBefore = (step: number) => [...unplayed.keys()].some(earlier => earlier > 0 && earlier < step)
 
   /** Reads `text` again from the start, whole: whatever is being read stops. */
   const replay = async (text: string) => {
@@ -155,7 +208,7 @@ export const register: Register = (on, options) => {
 
   /** Ends a response: past the limit, says its last sentence after the cut notice. */
   const finishResponse = (budget: Budget) => {
-    if (budget.tail !== undefined && Array.from(budget.tail).length <= MAX_TAIL) say(budget.tail)
+    if (budget.tail !== undefined && Array.from(budget.tail).length <= MAX_TAIL) say(budget.tail, budget)
     budget.tail = undefined
   }
 
@@ -168,6 +221,8 @@ export const register: Register = (on, options) => {
     if (player === undefined) $.ui.toast("tts: no audio player found (ffplay, paplay, aplay, afplay, powershell.exe)")
 
     directory = await prepareDirectory($, isWindows)
+    floorName = (await read($, floorId)) ?? floorName
+    await update($, floorId, () => floorName)
     let clipCount = 0
     let lastErrorAt = 0
 
@@ -201,10 +256,14 @@ export const register: Register = (on, options) => {
     void (async () => {
       for (;;) {
         const sentence = await sentences.take()
-        if (sentence.generation !== generation) continue
+        if (sentence.generation !== generation) {
+          settle(sentence)
+          continue
+        }
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => sentence.generation === generation
         let isFallback = false
+        let isHandedOff = false
         try {
           try {
             await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
@@ -229,20 +288,91 @@ export const register: Register = (on, options) => {
           // A notice the fallback read is kept for this time only: the engine may be back next time.
           const isCached = sentence.cacheAs !== undefined && !isFallback
           if (isCached) cachedNotices.set(sentence.text, file)
-          clips.push({ file, generation: sentence.generation, isCached })
+          const { generation: clipGeneration, step, priority, seq } = sentence
+          clips.push({ file, generation: clipGeneration, step, priority, seq, isCached })
+          isHandedOff = true
         } catch (error) {
           await $.process.run(removeFilesCommand([file], isWindows))
           if (isCurrent()) reportError(error)
+        } finally {
+          if (!isHandedOff) settle(sentence)
         }
       }
     })()
 
+    // One session plays at a time: the floor is a lock all sessions on this machine share.
+    let isHoldingFloor = false
+    // Set when the floor cannot be used (no sh, an unwritable temporary folder): play alone, as before.
+    let isFloorBroken = false
+    releaseFloor = async () => {
+      if (!isHoldingFloor) return
+      isHoldingFloor = false
+      await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
+    }
+
+    /** Keeps the floor while more of this session's speech is coming, so no other session cuts in; gives it up once none is. */
+    const holdFloor = async () => {
+      while (isHoldingFloor && clips.size === 0) {
+        if (unplayed.size === 0) return releaseFloor()
+        let timer: { cancel: () => void } | undefined
+        const isBeat = await Promise.race([
+          clips.ready().then(() => false),
+          new Promise<boolean>(resolve => {
+            onAllPlayed = () => resolve(false)
+            timer = $.clock.after(FLOOR_HEARTBEAT_MS, () => resolve(true))
+          }),
+        ])
+        onAllPlayed = () => {}
+        timer?.cancel()
+        if (isBeat && clips.size === 0 && unplayed.size > 0) {
+          const beat = await $.process.run(heartbeatCommand(isWindows, floorName)).catch(() => undefined)
+          if (beat?.exitCode === FLOOR_LOST) isHoldingFloor = false
+        }
+      }
+    }
+
+    /** Plays `clip` on the floor; drops it instead when it is stream text that waited past the limit. */
+    const playClip = async (clip: Clip, player: string) => {
+      const play = playCommand(player, clip.file, config.volume, isWindows)
+      for (;;) {
+        if (clip.generation !== generation) return
+        const priority = priorityOf(clip)
+        if (priority === STREAM_PRIORITY && clip.seq <= quietThrough) return
+        if (isFloorBroken || !config.sharePlayback) return void (await playbackProcess.read($.process.spawn({ argv: play })))
+        if (!isHoldingFloor) {
+          // Only text before a tool call waits within a limit: a notice or an answer is never dropped.
+          const limit = priority === STREAM_PRIORITY ? config.maxWaitSeconds : 0
+          const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
+          // A stop cancels the wait along with the clip.
+          if (clip.generation !== generation) return
+          if (waited.code === FLOOR_TIMEOUT) {
+            quietThrough = seq
+            return
+          }
+          if (waited.code !== 0) {
+            isFloorBroken = true
+            $.ui.log(`tts: playback is not shared with other sessions: ${(waited.stderr || `exit ${waited.code}`).trim().slice(0, 200)}`, { to: "debug" })
+            continue
+          }
+          isHoldingFloor = true
+        }
+        const played = await playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) }))
+        // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
+        if (played.code === FLOOR_YIELDED || played.code === FLOOR_LOST) {
+          isHoldingFloor = false
+          continue
+        }
+        return
+      }
+    }
+
     void (async () => {
       for (;;) {
+        await holdFloor()
         const clip = await clips.take()
         if (clip.generation === generation && player !== undefined) {
           try {
-            await playbackProcess.read($.process.spawn({ argv: playCommand(player, clip.file, config.volume, isWindows) }))
+            await playClip(clip, player)
           } catch (error) {
             if (clip.generation === generation) reportError(error)
           }
@@ -250,6 +380,7 @@ export const register: Register = (on, options) => {
         const files = [`${clip.file}.v.wav`]
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(removeFilesCommand(files, isWindows))
+        settle(clip)
       }
     })()
 
@@ -276,6 +407,7 @@ export const register: Register = (on, options) => {
 
   on("session.end", async ($, e, next) => {
     await stop()
+    await releaseFloor()
     cachedNotices.clear()
     if (directory !== "") await $.process.run(removeDirectoryCommand(directory, isWindows))
     directory = ""
@@ -288,6 +420,7 @@ export const register: Register = (on, options) => {
   on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
     if (directory === "") directory = await prepareDirectory($, isWindows)
     else await update($, audioDirectory, () => directory)
+    await update($, floorId, () => floorName)
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -492,8 +625,17 @@ export const register: Register = (on, options) => {
   on("turn.complete", async ($, e, next) => {
     if (e.reason === "aborted" && e.agentId === undefined) await stop()
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
+      // Stream: text from before the answer still waiting gives way to the answer, read from its start.
+      // Once the answer is being read, nothing earlier waits and it reads on: it is never said twice.
+      if (config.mode === "stream" && e.reason === "answer") answerStep = stepCount
+      if (config.mode === "stream" && e.reason === "answer" && e.answer !== "" && hasUnplayedBefore(stepCount)) {
+        await stop()
+        const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
+        enqueue(toSentences(e.answer), budget)
+        finishResponse(budget)
+      }
       if (config.mode === "final" && e.reason === "answer") {
-        const budget: Budget = { spoken: 0, isCut: false }
+        const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
         enqueue(toSentences(e.answer), budget)
         finishResponse(budget)
       }
@@ -531,7 +673,7 @@ export const register: Register = (on, options) => {
     if (!isEnabled || config.mode !== "stream" || e.agentId !== undefined) return yield* stream
 
     // Each response has its own budget: text before a tool call does not use up the answer's.
-    const budget: Budget = { spoken: 0, isCut: false }
+    const budget: Budget = { spoken: 0, isCut: false, step: ++stepCount, priority: STREAM_PRIORITY }
     const splitter = new SpeechSplitter()
     const responseGeneration = generation
     const queueResponse = (texts: readonly Spoken[]) => {
