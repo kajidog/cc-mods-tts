@@ -263,6 +263,22 @@ test("an earlier turn's answer still waiting is not cut off by the next turn's a
   await observed.idle()
 })
 
+test("a stop that cancels a wait for the floor gives back a floor the wait may have taken", { options }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "acquire" ? "block" : 0)
+  const releases = () => observed.commands.filter(argv => argv[3] === "tts-floor" && argv[2]?.includes('rm -f "$dir/floor"; exit 0'))
+  await $.session.start(start)
+  await $.command.run(command("test 待っています。"))
+  await observed.idle()
+  expect(observed.waits()).toHaveLength(1)
+  expect(releases()).toHaveLength(0)
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await settle()
+  expect(releases()).toHaveLength(1)
+  expect(observed.plays()).toEqual([])
+})
+
 test("a session that hands the floor over waits for it again and plays the same clip", { options }, async ($, on) => {
   const observed = host(on)
   let plays = 0

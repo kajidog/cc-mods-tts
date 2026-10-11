@@ -52,7 +52,7 @@ const SH_PRELUDE = [
   `stale() { owner; if valid "$b"; then [ $(($1 - b)) -gt ${STALE_HOLDER} ]; else [ -n "$(find "$dir/floor" -mmin +${Math.ceil(STALE_HOLDER / 60)} 2>/dev/null)" ]; fi; }`,
   // Removes a stale floor one waiter at a time, looking again under the takeover lock:
   // a floor another waiter took meanwhile is fresh, and stays.
-  `takeover() { if (set -C; echo "$1" > "$dir/takeover") 2>/dev/null; then stale "$1" && rm -f "$dir/floor"; rm -f "$dir/takeover"; else read -r t < "$dir/takeover" 2>/dev/null; valid "$t" && [ $(($1 - t)) -gt ${STALE_TAKEOVER} ] && rm -f "$dir/takeover"; fi; }`,
+  `takeover() { if (set -C; echo "$1" > "$dir/takeover") 2>/dev/null; then stale "$1" && rm -f "$dir/floor"; rm -f "$dir/takeover"; else read -r t < "$dir/takeover" 2>/dev/null; if valid "$t"; then [ $(($1 - t)) -gt ${STALE_TAKEOVER} ] && rm -f "$dir/takeover"; elif [ -n "$(find "$dir/takeover" -mmin +1 2>/dev/null)" ]; then rm -f "$dir/takeover"; fi; fi; }`,
   `fail() { echo "${FLOOR_MARK} $2" >&2; exit $1; }`,
 ].join("\n")
 
@@ -66,7 +66,7 @@ const PS_PRELUDE = [
   "function Beat($now) { try { [IO.File]::WriteAllText($floor, \"$id $now\") } catch {} }",
   `function Stale($now) { $o = Pair $floor; if ($null -ne $o) { return ($now - [long]$o[1] -gt ${STALE_HOLDER}) }; $f = Get-Item -LiteralPath $floor -ErrorAction SilentlyContinue; return ($null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_HOLDER}) }`,
   "function Create($path, $text) { try { $file = [IO.File]::Open($path, 'CreateNew', 'Write'); $bytes = [Text.Encoding]::ASCII.GetBytes($text); $file.Write($bytes, 0, $bytes.Length); $file.Dispose(); return $true } catch [IO.IOException] { return $false } }",
-  `function Takeover($now) { $t = Join-Path $dir 'takeover'; if (Create $t "$now") { try { if (Stale $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue } } finally { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } else { $s = ''; try { $s = [IO.File]::ReadAllText($t).Trim() } catch {}; if ($s -match '^[0-9]+$' -and $now - [long]$s -gt ${STALE_TAKEOVER}) { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } }`,
+  `function Takeover($now) { $t = Join-Path $dir 'takeover'; if (Create $t "$now") { try { if (Stale $now) { Remove-Item -LiteralPath $floor -Force -ErrorAction SilentlyContinue } } finally { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } else { $s = ''; try { $s = [IO.File]::ReadAllText($t).Trim() } catch {}; if ($s -match '^[0-9]+$') { $isStale = $now - [long]$s -gt ${STALE_TAKEOVER} } else { $f = Get-Item -LiteralPath $t -ErrorAction SilentlyContinue; $isStale = $null -ne $f -and ([DateTime]::UtcNow - $f.LastWriteTimeUtc).TotalSeconds -gt ${STALE_TAKEOVER} }; if ($isStale) { Remove-Item -LiteralPath $t -Force -ErrorAction SilentlyContinue } } }`,
   `function Fail($code, $what) { [Console]::Error.WriteLine("${FLOOR_MARK} $what"); exit $code }`,
 ].join("; ")
 

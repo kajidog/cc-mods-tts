@@ -336,6 +336,10 @@ export const register: Register = (on, options) => {
       isHoldingFloor = false
       await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
     })
+    // Removes a floor a wait killed mid-way may have taken; one this session does not hold is left alone.
+    const giveBackFloor = () => floorOp(async () => {
+      await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
+    })
     const heartbeat = () => floorOp(async () => {
       if (!isHoldingFloor) return
       const beat = await $.process.run(heartbeatCommand(isWindows, floorName)).catch(() => undefined)
@@ -394,8 +398,13 @@ export const register: Register = (on, options) => {
           waiting = { clip, priority, limit }
           const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
           waiting = undefined
-          // A stop cancels the wait along with the clip.
-          if (clip.generation !== generation) return
+          // A wait cancelled just as it took the floor still holds it: it is given up once nothing is left to say.
+          if (waited.code === 0) isHoldingFloor = true
+          // A stop cancels the wait along with the clip; one killed mid-way may have taken the floor, so give it back.
+          if (clip.generation !== generation) {
+            if (waited.code !== 0) await giveBackFloor()
+            return
+          }
           // The clip's priority or limit changed: wait again with the new ones.
           if (isRewaiting) {
             isRewaiting = false
@@ -408,9 +417,9 @@ export const register: Register = (on, options) => {
           if (waited.code !== 0) {
             isFloorBroken = true
             $.ui.log(`tts: playback is not shared with other sessions: ${(waited.stderr || `exit ${waited.code}`).trim().slice(0, 200)}`, { to: "debug" })
+            await giveBackFloor()
             continue
           }
-          isHoldingFloor = true
         }
         const played = await keepFloor(playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) })))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
