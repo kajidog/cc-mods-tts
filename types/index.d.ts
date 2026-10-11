@@ -24,6 +24,8 @@ declare module "claude-code" {
       picker: Picker | null
       /** Private audio directory owned by the current module, cleaned on reload or exit. */
       audioDirectory: string | null
+      /** Names this session on the floor other sessions share, so a reload keeps holding it. */
+      floorId: string | null
     }
   }
 }

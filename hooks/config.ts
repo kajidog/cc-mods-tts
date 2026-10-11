@@ -43,6 +43,10 @@ export type TtsConfig = {
   player: string
   volume: number
   maxCharsPerTurn: number
+  /** Take turns with other sessions on the floor; false plays at once, over them. */
+  sharePlayback: boolean
+  /** Seconds text before a tool call waits for another session to finish; 0: no limit. */
+  maxWaitSeconds: number
   interruptOnPrompt: boolean
   /** Added to the system prompt while replies are read; empty: nothing. */
   modelPrompt: string
@@ -60,6 +64,8 @@ export function toConfig(options: PluginOptions): TtsConfig {
     player: String(options.player),
     volume: Number(options.volume),
     maxCharsPerTurn: Number(options.maxCharsPerTurn),
+    sharePlayback: options.sharePlayback !== false,
+    maxWaitSeconds: Math.max(0, Number(options.maxWaitSeconds ?? 60) || 0),
     interruptOnPrompt: options.interruptOnPrompt === true,
     modelPrompt: String(options.modelPrompt ?? "").trim(),
     notices: Object.fromEntries(

@@ -16,6 +16,17 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   let onStarted: () => void = () => {}
   const started = new Promise<void>(resolve => { onStarted = resolve })
   const cancelled: string[] = []
+  // The exit code of the floor's commands; every one succeeds unless a test says otherwise.
+  // "block" waits until the command is cancelled, or until `unblock` lets every blocked one succeed.
+  // `isMarked` false plays a player that exits 75 or 76 itself, saying nothing of the floor.
+  const unblocked: (() => void)[] = []
+  const floor = {
+    exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0,
+    isMarked: true,
+    unblock: () => {
+      for (const resolve of unblocked.splice(0)) resolve()
+    },
+  }
   on("session.start", () => ({ cwd: "/review" }))
   on("session.cwd", () => ({ value: "/review" }))
   on("env.get", () => ({ value: isWindows ? "Windows_NT" : undefined }))
@@ -37,8 +48,24 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { exitCode: 0, stdout, stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on("clock.after", () => new Promise<{ value: undefined }>(() => {}))
+  // The host's clock, which a test moves on by hand.
+  const clock = { now: 1_000_000 }
+  on("clock.now", () => ({ value: clock.now }))
   on("process.spawn", async function* (_, e, next) {
     processes.push(e)
+    const kind = floorKind(e.argv)
+    if (kind !== undefined) {
+      const code = floor.exit(kind, e.argv)
+      if (code === "block") {
+        const isReleased = await new Promise<boolean>(resolve => {
+          next.signal.addEventListener("abort", () => resolve(false))
+          unblocked.push(() => resolve(true))
+        })
+        return { value: isReleased ? { code: 0, signal: null } : { code: null, signal: "SIGTERM" } }
+      }
+      if (code !== 0 && kind === "play" && floor.isMarked) yield { stream: "stderr" as const, text: "tts-floor: yielded\n" }
+      if (code !== 0) return { value: { code, signal: null } }
+    }
     if (blockedInput !== undefined && e.input === blockedInput) {
       onStarted()
       await new Promise<void>(resolve => next.signal.addEventListener("abort", resolve))
@@ -48,7 +75,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { code: 0, signal: null } }
   })
   return {
-    commands, processes, started, cancelled,
+    commands, processes, started, cancelled, floor, clock,
     /** Waits until synthesis and playback stop asking the host for anything. */
     idle: async () => {
       for (let seen = -1; seen !== commands.length + processes.length;) {
@@ -57,7 +84,17 @@ function host(on: On, blockedInput?: string, isWindows = false) {
       }
     },
     spoken: () => processes.filter(e => e.argv[0] === "synth").map(e => e.input),
+    /** The priority and wait limit of each wait for the floor. */
+    waits: () => processes.filter(e => floorKind(e.argv) === "acquire").map(e => e.argv.slice(5, 7)),
+    /** The priority of each clip played on the floor. */
+    plays: () => processes.filter(e => floorKind(e.argv) === "play").map(e => e.argv[5]),
   }
+}
+
+/** Which of the floor's commands a Unix spawn is: the wait for it, or a clip played holding it. */
+function floorKind(argv: readonly string[]): "acquire" | "play" | undefined {
+  if (argv[0] !== "sh" || argv[3] !== "tts-floor") return undefined
+  return argv[2]?.includes("trap ") ? "acquire" : "play"
 }
 
 // Drain promise continuations without real timers or audio.
@@ -126,6 +163,329 @@ test("stop mutes later stream chunks and later steps until the next turn", { opt
   await observed.idle()
   await settle()
   expect(observed.spoken()).toEqual(["一文目。", "一文目。", "二文目。"])
+})
+
+test("in stream, the answer cuts off earlier text still being read and is read from its start", { options }, async ($, on) => {
+  const observed = host(on, "途中です。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "途中です。" : "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.started
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.cancelled).toEqual(["途中です。"])
+  expect(observed.spoken()).toEqual(["途中です。", "答えです。"])
+})
+
+test("in stream, an answer already being read reads on and is not said twice", { options }, async ($, on) => {
+  const observed = host(on, "答えです。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* A turn without tool calls. */ }
+  await observed.started
+  await $.turn.complete(completed("答えです。"))
+  await settle()
+  expect(observed.cancelled).toEqual([])
+  expect(observed.spoken()).toEqual(["答えです。"])
+  // Release the blocked synthesis before the test ends.
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
+test("stream text waits within the limit once a later response shows it comes before a tool call", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  // Another session reads the whole time: a limited wait gives up, an unlimited one waits on.
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "一文目。二文目。" : "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* It may still be the answer: no limit yet. */ }
+  await observed.idle()
+  expect(observed.waits()).toEqual([["0", "0"]])
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* After a tool call. */ }
+  await observed.idle()
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  // The first sentence gives up within the limit, and the one queued behind it is dropped without waiting.
+  expect(observed.waits()).toEqual([["0", "0"], ["0", "5"], ["0", "0"], ["1", "0"]])
+  expect(observed.plays()).toEqual(["1"])
+})
+
+test("stream text of a response that ends calling a tool waits within the limit at once", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* The tool then runs for a while; no later response yet. */ }
+  await observed.idle()
+  await settle()
+  // Whether it began waiting before or after the response ended, it ends up waiting within the limit.
+  expect(observed.waits().at(-1)).toEqual(["0", "5"])
+  expect(observed.plays()).toEqual([])
+})
+
+test("a stop during a restarted wait leaves later waits free to restart", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind === "acquire" && argv[5] === "0" ? "block" : 0)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.turnId === "first" ? "調べます。" : "答えです。" }
+    if (e.turnId === "first") yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    const toolUses = e.turnId === "first" ? [{ name: "Read", input: {} }] : []
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  const first = $.turn.step({ ...step, turnId: "first" })
+  await first.next()
+  await observed.idle()
+  // The response ends calling a tool, restarting the wait, and a stop lands before it restarts.
+  for await (const _ of first) { /* Finish the response. */ }
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* The next answer, while another session reads. */ }
+  await observed.idle()
+  await $.turn.complete({ ...completed("答えです。"), turnId: "second" })
+  await observed.idle()
+  await settle()
+  expect(observed.waits().at(-1)).toEqual(["1", "0"])
+  expect(observed.plays()).toEqual(["1"])
+})
+
+test("a response that ends calling a tool is classified even when the consumer stops pulling at its last chunk", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  const stream = $.turn.step(step)
+  await stream.next()
+  await observed.idle()
+  await stream.next()
+  // The last chunk is in; the consumer closes the stream instead of pulling it to its end.
+  await stream.return({ ...stepResult, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" })
+  await observed.idle()
+  await settle()
+  expect(observed.waits().at(-1)).toEqual(["0", "5"])
+})
+
+test("a subagent's turn starting does not hide the main turn's earlier text from its answer", { options }, async ($, on) => {
+  const observed = host(on, "途中です。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "途中です。" : "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.started
+  // The tool is an Agent call: its subagent's turn starts.
+  await $.turn.start({ text: "sub", turnId: "sub", agentId: "sub" } as Parameters<typeof $.turn.start>[0])
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.cancelled).toEqual(["途中です。"])
+  expect(observed.spoken()).toEqual(["途中です。", "答えです。"])
+})
+
+test("an earlier turn's last response, ended in an error, is not dropped as text before a tool call", { options: { ...options, maxWaitSeconds: 5, interruptOnPrompt: false } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind !== "acquire" || argv[5] !== "0" ? 0 : argv[6] === "5" ? 3 : "block")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.turnId === "first" ? "失敗しました。" : "次です。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  for await (const _ of $.turn.step({ ...step, turnId: "first" })) { /* Another session reads meanwhile. */ }
+  await observed.idle()
+  await $.turn.complete({ ...completed("失敗しました。"), turnId: "first", reason: "error" as const })
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* The next turn's first response. */ }
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([["0", "0"]])
+  // Release the blocked wait before the test ends.
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
+test("an earlier turn's answer still waiting reads on when this turn's answer replaces its earlier text", { options: { ...options, interruptOnPrompt: false } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "acquire" ? "block" : 0)
+  const texts: Record<string, string> = { "first:0": "前の答えです。", "second:0": "途中です。", "second:1": "答えです。" }
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: texts[`${e.turnId}:${e.index}`] ?? "" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  for await (const _ of $.turn.step({ ...step, turnId: "first" })) { /* Another session reads meanwhile. */ }
+  await $.turn.complete({ ...completed("前の答えです。"), turnId: "first" })
+  await observed.idle()
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* Text before a tool call. */ }
+  for await (const _ of $.turn.step({ ...step, turnId: "second", index: 1 })) { /* The answer. */ }
+  await observed.idle()
+  await $.turn.complete({ ...completed("答えです。"), turnId: "second" })
+  await observed.idle()
+  // The other session finishes: the earlier answer, then this one read whole, and nothing of the text before it.
+  observed.floor.exit = () => 0
+  observed.floor.unblock()
+  await observed.idle()
+  await settle()
+  expect(observed.plays()).toEqual(["1", "1"])
+})
+
+test("a limited wait keeps its deadline across waits again after a handover", { options: { ...options, maxWaitSeconds: 5 } }, async ($, on) => {
+  const observed = host(on)
+  let plays = 0
+  // The first play is handed over, six seconds on: past the limit, the clip waits no more.
+  observed.floor.exit = kind => {
+    if (kind !== "play" || plays++ > 0) return 0
+    observed.clock.now += 6_000
+    return 75
+  }
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "調べます。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([["0", "5"]])
+  expect(observed.plays()).toEqual(["0"])
+})
+
+test("a player that exits 75 itself is not taken for a handover", { options }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "play" ? 75 : 0)
+  observed.floor.isMarked = false
+  await $.session.start(start)
+  await $.command.run(command("test 一回だけ。"))
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toHaveLength(1)
+  expect(observed.plays()).toEqual(["2"])
+})
+
+test("stream text waiting for the floor waits again as the answer once the turn ends", { options }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind === "acquire" && argv[5] === "0" ? "block" : 0)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q", turnId: "turn" })
+  for await (const _ of $.turn.step(step)) { /* A turn without tool calls, while another session reads. */ }
+  await observed.idle()
+  expect(observed.waits()).toEqual([["0", "0"]])
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([["0", "0"], ["1", "0"]])
+  expect(observed.plays()).toEqual(["1"])
+  expect(observed.spoken()).toEqual(["答えです。"])
+})
+
+test("an earlier turn's answer still waiting is not cut off by the next turn's answer", { options: { ...options, interruptOnPrompt: false } }, async ($, on) => {
+  const observed = host(on, "前の答えです。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.turnId === "first" ? "前の答えです。" : "次の答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  await $.turn.start({ text: "q1", turnId: "first" })
+  for await (const _ of $.turn.step({ ...step, turnId: "first" })) { /* The first answer. */ }
+  await observed.started
+  await $.turn.complete({ ...completed("前の答えです。"), turnId: "first" })
+  await $.turn.start({ text: "q2", turnId: "second" })
+  for await (const _ of $.turn.step({ ...step, turnId: "second" })) { /* The next answer. */ }
+  await $.turn.complete({ ...completed("次の答えです。"), turnId: "second" })
+  await settle()
+  expect(observed.cancelled).toEqual([])
+  // Release the blocked synthesis before the test ends.
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
+test("a stop that cancels a wait for the floor gives back a floor the wait may have taken", { options }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "acquire" ? "block" : 0)
+  const releases = () => observed.commands.filter(argv => argv[3] === "tts-floor" && argv[2]?.includes("drop; exit 0"))
+  await $.session.start(start)
+  await $.command.run(command("test 待っています。"))
+  await observed.idle()
+  expect(observed.waits()).toHaveLength(1)
+  expect(releases()).toHaveLength(0)
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await settle()
+  expect(releases()).toHaveLength(1)
+  expect(observed.plays()).toEqual([])
+})
+
+test("a session that hands the floor over waits for it again and plays the same clip", { options }, async ($, on) => {
+  const observed = host(on)
+  let plays = 0
+  observed.floor.exit = kind => (kind === "play" && plays++ === 0 ? 75 : 0)
+  await $.session.start(start)
+  await $.command.run(command("test 一回だけ。"))
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([["2", "0"], ["2", "0"]])
+  expect(observed.plays()).toEqual(["2", "2"])
+  expect(observed.spoken()).toEqual(["一回だけ。"])
+})
+
+test("with sharePlayback off, clips play at once without the floor", { options: { ...options, sharePlayback: false } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toEqual([])
+  expect(observed.plays()).toEqual([])
+  expect(observed.processes.filter(e => e.argv[0] === "sh" && e.argv[3] === "tts-play")).toHaveLength(1)
+})
+
+test("without a usable floor, clips play alone as before", { options }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "acquire" ? 1 : 0)
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await $.command.run(command("test 二文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.waits()).toHaveLength(1)
+  expect(observed.plays()).toEqual([])
+  expect(observed.processes.filter(e => e.argv[0] === "sh" && e.argv[3] === "tts-play")).toHaveLength(2)
 })
 
 test("stop cancels an in-flight synthesis without falling back and frees the queue", {

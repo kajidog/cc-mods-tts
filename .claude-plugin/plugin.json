@@ -79,6 +79,18 @@
       "description": "Maximum characters read from one model response, excluding the cut notice and the response's last sentence, still said after it; text before a tool call and the answer after it count apart. 0 reads everything.",
       "default": 600
     },
+    "sharePlayback": {
+      "type": "boolean",
+      "title": "TTS: Take turns with other sessions",
+      "description": "Play one session at a time when several Claude Code sessions on this machine read aloud, notices and answers first. Off: each session plays at once, over the others.",
+      "default": true
+    },
+    "maxWaitSeconds": {
+      "type": "number",
+      "title": "TTS: Max wait for other sessions",
+      "description": "Seconds text before a tool call waits while another Claude Code session reads aloud; past it that text is dropped. Notices and answers always wait to be read. 0 waits without limit.",
+      "default": 60
+    },
     "interruptOnPrompt": {
       "type": "boolean",
       "title": "TTS: Stop on new prompt",

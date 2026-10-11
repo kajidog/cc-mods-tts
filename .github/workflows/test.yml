@@ -1,0 +1,43 @@
+name: Test
+
+on:
+  workflow_call:
+    inputs:
+      claude-code-version:
+        description: The @anthropic-ai/claude-code version to validate and test against
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install -g @anthropic-ai/claude-code@${{ inputs.claude-code-version }}
+      - name: Show Claude Code version
+        shell: bash
+        run: |
+          version=$(claude --version)
+          echo "$version"
+          echo "Claude Code: \`$version\` (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+      # The same static analysis Claude Code runs when it loads the mod.
+      - run: npm run validate
+      - name: Generate mod API types
+        run: claude --init-only --plugin-dir .
+        env:
+          # Emit API declarations even in a non-interactive session.
+          CLAUDE_CODE_PLUGIN_DIR_WATCH: "1"
+      - run: npm run typecheck
+      - run: npm test

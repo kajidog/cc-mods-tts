@@ -1,0 +1,16 @@
+name: Latest Claude Code
+
+# The mod API is early access and may change in any release: check the newest one every day.
+on:
+  schedule:
+    - cron: "0 0 * * *" # 09:00 JST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      claude-code-version: latest
