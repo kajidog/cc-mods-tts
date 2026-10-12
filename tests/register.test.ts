@@ -1,6 +1,8 @@
 import type { On, ProcessSpawnRequest, SessionMessage, TurnStepResult } from "claude-code"
 import { expect, test } from "claude-code/testing"
 
+import { SUMMARY_PROMPT } from "../hooks/summary"
+
 const options = { engine: "command", command: "synth {out}", player: "aplay" }
 const start = { cwd: "/review", surface: "terminal" as const, isInteractive: true }
 const command = (args: string) => ({ command: "tts", args, origin: { kind: "composer" as const }, presentation: { isFullscreen: false, columns: 80 } })
@@ -686,11 +688,86 @@ const expectSections = (expected: string[]): NonNullable<Parameters<typeof test>
   expect(sections.map(section => `${section.id}:${section.text}`)).toEqual(expected)
 }
 
-test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。" } }, expectSections(["intro:x", "tts:spoken:日本語で。"]))
+test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。" } }, expectSections(["intro:x", "tts:spoken:日本語で。", `tts:summary:${SUMMARY_PROMPT}`]))
 
-for (const [name, extra] of [["an empty prompt", { modelPrompt: "" }], ["notify mode", { mode: "notify" }], ["off", { enabled: false }]] as const) {
+test("asks for no summary with the summary setting off", { options: { ...options, modelPrompt: "日本語で。", summary: false } }, expectSections(["intro:x", "tts:spoken:日本語で。"]))
+
+for (const [name, extra] of [["an empty prompt and no summary", { modelPrompt: "", summary: false }], ["notify mode", { mode: "notify" }], ["off", { enabled: false }]] as const) {
   test(`adds nothing to the system prompt with ${name}`, { options: { ...options, ...extra } }, expectSections(["intro:x"]))
 }
+
+const summarized = "**要約**: 直しました。\n\n詳しくはこうです。最後に確認します。"
+
+test("in final, an answer opening with a summary line is heard as that line alone", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(summarized))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["直しました。"])
+})
+
+test("with the summary setting off, the whole answer is read", { options: { ...options, mode: "final", summary: false } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(summarized))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["要約: 直しました。", "詳しくはこうです。", "最後に確認します。"])
+})
+
+test("in stream, text before a tool call is read and the answer only as its summary line", { options }, async ($, on) => {
+  const observed = host(on)
+  on("turn.step", async function* (_, e) {
+    const pieces = e.index === 0 ? ["調べます。\n"] : ["**要約**: 直し", "ました。\n\n詳しくは", "こうです。"]
+    for (const [ref, text] of pieces.entries()) yield { kind: "text", ref, index: 0, text }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.idle()
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("**要約**: 直しました。\n\n詳しくはこうです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["調べます。", "直しました。"])
+})
+
+test("in stream, the answer read again in place of earlier text is read as its summary line", { options }, async ($, on) => {
+  const observed = host(on, "途中です。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "途中です。" : summarized }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.started
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed(summarized))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["途中です。", "直しました。"])
+})
+
+test("publishes what is playing and the engine in use for other mods to show", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const published: Record<string, unknown> = {}
+  on("state.set", (_, e, next) => {
+    published[e.key] = e.value
+    return next(e)
+  })
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  await $.session.start(start)
+  await settle()
+  expect(published.engine).toEqual({ name: "command", voice: "synth {out}", status: "ok" })
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  expect(published.speech).toEqual({ state: "playing", text: "答えです。" })
+  observed.floor.unblock()
+  await observed.idle()
+  await settle()
+  expect(published.speech).toEqual({ state: "idle", text: null })
+})
 
 test("replay reads the last answer whole, past the response budget", { options: { ...options, maxCharsPerTurn: 10 } }, async ($, on) => {
   const observed = host(on)

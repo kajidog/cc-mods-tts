@@ -103,6 +103,12 @@
       "description": "Added to Claude's system prompt while replies are read (stream and final modes), so that what is spoken reads well. Empty: add nothing.",
       "default": "応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。"
     },
+    "summary": {
+      "type": "boolean",
+      "title": "TTS: Read the summary only",
+      "description": "Ask Claude to open long answers with a summary line (**要約**: …) and read only that line where an answer has one (stream and final modes). /tts replay still reads the whole answer. /tts summary on and /tts summary off set this.",
+      "default": true
+    },
     "irodoriUrl": {
       "type": "string",
       "title": "TTS: Irodori URL",

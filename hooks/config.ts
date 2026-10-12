@@ -55,6 +55,8 @@ export type TtsConfig = {
   interruptOnPrompt: boolean
   /** Added to the system prompt while replies are read; empty: nothing. */
   modelPrompt: string
+  /** Ask for a summary line on long answers, and read only it where an answer has one. */
+  summary: boolean
   notices: Notices
 }
 
@@ -73,6 +75,7 @@ export function toConfig(options: PluginOptions): TtsConfig {
     maxWaitSeconds: Math.max(0, Number(options.maxWaitSeconds ?? 60) || 0),
     interruptOnPrompt: options.interruptOnPrompt === true,
     modelPrompt: String(options.modelPrompt ?? "").trim(),
+    summary: options.summary !== false,
     notices: Object.fromEntries(
       Object.entries(NOTICE_OPTIONS).map(([notice, option]) => [notice, String(options[option] ?? "").trim()]),
     ) as Notices,
