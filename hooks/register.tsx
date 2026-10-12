@@ -321,6 +321,11 @@ export const register: Register = (on, options) => {
       $.ui.status(issue)
       if (issue !== undefined) publishEngine(/unset$/.test(issue) ? "unset" : "down")
     }
+    // Published one write after another: a slow write never lands after the one that followed it.
+    let stateWrites = Promise.resolve()
+    const publish = (write: () => Promise<unknown>) => {
+      stateWrites = stateWrites.then(write).then(() => undefined, () => undefined)
+    }
     // Published as it changes, like the speech below.
     let shownEngine = ""
     const publishEngine = (status: EngineState["status"]) => {
@@ -328,7 +333,7 @@ export const register: Register = (on, options) => {
       const key = JSON.stringify(published)
       if (key === shownEngine) return
       shownEngine = key
-      void update($, engineState, () => published)
+      publish(() => update($, engineState, () => published))
     }
     // Published as it changes; the same state twice is written once.
     let shownSpeech = ""
@@ -338,7 +343,7 @@ export const register: Register = (on, options) => {
       const key = JSON.stringify(speech)
       if (key === shownSpeech) return
       shownSpeech = key
-      void update($, speechState, () => speech)
+      publish(() => update($, speechState, () => speech))
     }
     onIdle = () => publishSpeech({ state: "idle", text: null })
     publishSpeech({ state: "idle", text: null })

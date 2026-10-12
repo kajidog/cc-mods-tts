@@ -798,6 +798,7 @@ test("publishes preparing while the first sentence is synthesized", { options: {
   await $.session.start(start)
   await $.turn.complete(completed("答えです。"))
   await observed.started
+  await settle()
   expect(published.speech).toEqual({ state: "preparing", text: null })
   await $.command.run(command("stop"))
   await observed.idle()
