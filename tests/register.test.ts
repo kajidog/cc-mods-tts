@@ -41,11 +41,12 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   on("ui.log", () => ({ value: undefined }))
   on("turn.start", (_, e) => ({ turnId: e.turnId }))
   on("turn.complete", (_, e) => ({ text: e.answer }))
-  // A test may hold the engine check's answer, and make synthesis fail.
-  const engine = { check: Promise.resolve(), synthesisExit: 0 }
+  // A test may hold the engine check's answer and the removal of audio files, and make synthesis fail.
+  const engine = { check: Promise.resolve(), cleanup: Promise.resolve(), synthesisExit: 0 }
   on("process.run", async (_, e) => {
     commands.push([...e.argv])
     if (e.argv[3] === "probe") await engine.check
+    if (e.argv[0] === "rm") await engine.cleanup
     let stdout = ""
     if (e.argv[0] === "mktemp") stdout = `/tmp/claude-tts-test${++directories}\n`
     else if (e.argv.at(-1)?.includes("CreateDirectory")) stdout = `C:\\Users\\日本語 Test\\Temp\\claude-tts-test${++directories}\r\n`
@@ -838,6 +839,51 @@ test("an engine check answering after a failed synthesis does not report the eng
   answerCheck()
   await settle()
   expect(published.at(-1)).toEqual({ name: "command", voice: "synth {out}", status: "down" })
+})
+
+/** Records each speech state published, latest last. */
+function speechStates(on: On) {
+  const states: unknown[] = []
+  on("state.set", (_, e, next) => {
+    if (e.key === "speech") states.push(e.value)
+    return next(e)
+  })
+  return states
+}
+
+test("publishes preparing while the next sentence of the same response is synthesized", { options }, async ($, on) => {
+  const observed = host(on, "二文目。")
+  const states = speechStates(on)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "一文目。二文目。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* One response, two sentences. */ }
+  await observed.started
+  await observed.idle()
+  expect(states.at(-1)).toEqual({ state: "preparing", text: null })
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
+test("publishes idle as soon as speech is stopped, before what was queued is cleaned up", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const states = speechStates(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  expect(states.at(-1)).toEqual({ state: "playing", text: "答えです。" })
+  let cleanUp = () => {}
+  observed.engine.cleanup = new Promise<void>(resolve => { cleanUp = resolve })
+  await $.command.run(command("stop"))
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "idle", text: null })
+  cleanUp()
+  await observed.idle()
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "idle", text: null })
 })
 
 test("replay reads the last answer whole, past the response budget", { options: { ...options, maxCharsPerTurn: 10 } }, async ($, on) => {

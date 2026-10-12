@@ -189,6 +189,8 @@ export const register: Register = (on, options) => {
   /** Invalidates queued speech and closes the active synthesis and playback streams. */
   const stop = async () => {
     generation += 1
+    // Shown at once: what was queued is cleaned up after, which can take seconds.
+    onIdle()
     await Promise.all([synthesisProcess.stop(), playbackProcess.stop(), floorProcess.stop()])
   }
 
@@ -366,7 +368,7 @@ export const register: Register = (on, options) => {
         }
         synthesizing = sentence
         // Nothing waiting or playing: the first sentence is being synthesized, which can take minutes.
-        if (playing === undefined && clips.size === 0) publishSpeech({ state: "preparing", text: null })
+        if ((playing === undefined || !isLive(playing)) && clips.size === 0) publishSpeech({ state: "preparing", text: null })
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => isLive(sentence)
         let isFallback = false
@@ -566,7 +568,8 @@ export const register: Register = (on, options) => {
         const files = [`${clip.file}.v.wav`]
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(removeFilesCommand(files, isWindows))
-        if (unplayed.size > 1) publishSpeech({ state: "preparing", text: null })
+        // Counted by speech, not by response: one response's sentences share a key.
+        if (isLive(clip) && [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1) publishSpeech({ state: "preparing", text: null })
         settle(clip)
       }
     })()
