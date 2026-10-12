@@ -889,6 +889,21 @@ test("publishes preparing while the answer replacing earlier text is synthesized
   await observed.idle()
 })
 
+test("publishes idle once the last clip has played, before its files are removed", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const states = speechStates(on)
+  let cleanUp = () => {}
+  observed.engine.cleanup = new Promise<void>(resolve => { cleanUp = resolve })
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "idle", text: null })
+  expect(states).toContainEqual({ state: "playing", text: "答えです。" })
+  cleanUp()
+  await observed.idle()
+})
+
 test("publishes idle as soon as speech is stopped, before what was queued is cleaned up", { options: { ...options, mode: "final" } }, async ($, on) => {
   const observed = host(on)
   const states = speechStates(on)

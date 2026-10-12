@@ -568,12 +568,16 @@ export const register: Register = (on, options) => {
             playing = undefined
           }
         }
+        // Published before the files are removed, which can take seconds (PowerShell on Windows).
+        // Counted by speech, not by response: one response's sentences share a key.
+        // A clip given way to (not one a stop dropped) leaves the answer that replaces it being synthesized.
+        if (clip.generation === generation) {
+          const isMore = [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1
+          publishSpeech(isMore ? { state: "preparing", text: null } : { state: "idle", text: null })
+        }
         const files = [`${clip.file}.v.wav`]
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(removeFilesCommand(files, isWindows))
-        // Counted by speech, not by response: one response's sentences share a key.
-        // A clip given way to (not one a stop dropped) leaves the answer that replaces it being synthesized.
-        if (clip.generation === generation && [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1) publishSpeech({ state: "preparing", text: null })
         settle(clip)
       }
     })()
