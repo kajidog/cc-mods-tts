@@ -304,9 +304,13 @@ export const register: Register = (on, options) => {
     let clipCount = 0
     let lastErrorAt = 0
 
+    // Counts what was learned of the engine: a check whose answer comes after a later synthesis is stale.
+    let engineNews = 0
     const noteEngine = (error?: unknown) => {
+      engineNews += 1
       const issue = error === undefined ? undefined : `${config.engine} ${/is not set/.test(String(error)) ? "unset" : "down"}`
       showEngineIssue(issue)
+      if (issue === undefined) publishEngine("ok")
     }
     // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
     const showEngineIssue = (issue: string | undefined) => {
@@ -315,8 +319,14 @@ export const register: Register = (on, options) => {
       $.ui.status(issue)
       if (issue !== undefined) publishEngine(/unset$/.test(issue) ? "unset" : "down")
     }
+    // Published as it changes, like the speech below.
+    let shownEngine = ""
     const publishEngine = (status: EngineState["status"]) => {
-      void update($, engineState, () => ({ name: config.engine, voice: engine.voice, status }))
+      const published: EngineState = { name: config.engine, voice: engine.voice, status }
+      const key = JSON.stringify(published)
+      if (key === shownEngine) return
+      shownEngine = key
+      void update($, engineState, () => published)
     }
     // Published as it changes; the same state twice is written once.
     let shownSpeech = ""
@@ -364,10 +374,7 @@ export const register: Register = (on, options) => {
         try {
           try {
             await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
-            if (isCurrent()) {
-              if (engineIssue !== undefined) publishEngine("ok")
-              noteEngine()
-            }
+            if (isCurrent()) noteEngine()
           } catch (error) {
             if (isCurrent()) noteEngine(error)
             if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
@@ -570,14 +577,16 @@ export const register: Register = (on, options) => {
       if (!isEnabled) return publishEngine("off")
       publishEngine("checking")
       const checked = engine
+      const news = ++engineNews
       void checkEngine($, checked).then(state => {
-        if (checked !== engine) return
+        if (checked !== engine || news !== engineNews) return
         if (state === "ok") publishEngine("ok")
         else showEngineIssue(`${config.engine} ${state}`)
       })
     }
     republishState = () => {
       shownSpeech = ""
+      shownEngine = ""
       publishSpeech(lastSpeech)
       recheckEngine()
     }

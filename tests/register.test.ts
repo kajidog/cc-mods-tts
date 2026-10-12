@@ -41,8 +41,11 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   on("ui.log", () => ({ value: undefined }))
   on("turn.start", (_, e) => ({ turnId: e.turnId }))
   on("turn.complete", (_, e) => ({ text: e.answer }))
-  on("process.run", (_, e) => {
+  // A test may hold the engine check's answer, and make synthesis fail.
+  const engine = { check: Promise.resolve(), synthesisExit: 0 }
+  on("process.run", async (_, e) => {
     commands.push([...e.argv])
+    if (e.argv[3] === "probe") await engine.check
     let stdout = ""
     if (e.argv[0] === "mktemp") stdout = `/tmp/claude-tts-test${++directories}\n`
     else if (e.argv.at(-1)?.includes("CreateDirectory")) stdout = `C:\\Users\\日本語 Test\\Temp\\claude-tts-test${++directories}\r\n`
@@ -55,6 +58,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   on("clock.now", () => ({ value: clock.now }))
   on("process.spawn", async function* (_, e, next) {
     processes.push(e)
+    if (e.argv[0] === "synth" && engine.synthesisExit !== 0) return { value: { code: engine.synthesisExit, signal: null } }
     const kind = floorKind(e.argv)
     if (kind !== undefined) {
       const code = floor.exit(kind, e.argv)
@@ -77,7 +81,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { code: 0, signal: null } }
   })
   return {
-    commands, processes, started, cancelled, floor, clock,
+    commands, processes, started, cancelled, floor, clock, engine,
     /** Waits until synthesis and playback stop asking the host for anything. */
     idle: async () => {
       for (let seen = -1; seen !== commands.length + processes.length;) {
@@ -814,6 +818,26 @@ test("publishes its state again after /clear resets it", { options }, async ($, 
   await settle()
   expect(published).toContain("speech")
   expect(published).toContain("engine")
+})
+
+test("an engine check answering after a failed synthesis does not report the engine fine", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const published: unknown[] = []
+  on("state.set", (_, e, next) => {
+    if (e.key === "engine") published.push(e.value)
+    return next(e)
+  })
+  // The check at start answers only once the synthesis has failed.
+  let answerCheck = () => {}
+  observed.engine.check = new Promise<void>(resolve => { answerCheck = resolve })
+  observed.engine.synthesisExit = 1
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  answerCheck()
+  await settle()
+  expect(published.at(-1)).toEqual({ name: "command", voice: "synth {out}", status: "down" })
 })
 
 test("replay reads the last answer whole, past the response budget", { options: { ...options, maxCharsPerTurn: 10 } }, async ($, on) => {
