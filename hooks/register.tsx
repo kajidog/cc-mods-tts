@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register } from "claude-code"
 
-import type { Picker, Setting } from "../types"
+import type { EngineState, Picker, Setting, SpeechState } from "../types"
 
 import { Channel } from "./channel"
 import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
@@ -26,6 +26,7 @@ import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from
 import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
+import { SUMMARY_PROMPT, SummaryFilter, summaryOf } from "./summary"
 import { capLength, QUOTE_ENDED, QUOTED, SKIPPED_CODE, SKIPPED_TABLE, type Spoken, SpeechSplitter, toSentences } from "./speech-text"
 
 const HELP = [
@@ -36,6 +37,7 @@ const HELP = [
   "/tts replay            read the last answer again, whole",
   "/tts replay select     pick a recent block of the conversation and read it whole",
   "/tts mode [name]       stream | final | notify; no name opens a picker",
+  "/tts summary [on|off]  read only the summary line a long answer opens with",
   "/tts engine [name]     switch engines; no name checks whether each one answers",
   "/tts voice [id]        pick a voice; no id opens a picker",
   "/tts speed [n]         speech speed (1: as is, Irodori: 0.25–4); no value opens a picker",
@@ -54,6 +56,9 @@ const picker = atom({ plugin: "tts", key: "picker" } as const, null as Picker | 
 const audioDirectory = atom({ plugin: "tts", key: "audioDirectory" } as const, null as string | null)
 // Survives a reload so the next module holds the floor the last one held.
 const floorId = atom({ plugin: "tts", key: "floorId" } as const, null as string | null)
+// Published for other mods to show; this mod only writes them.
+const speechState = atom({ plugin: "tts", key: "speech" } as const, { state: "idle", text: null } as SpeechState)
+const engineState = atom({ plugin: "tts", key: "engine" } as const, { name: "", voice: "", status: "checking" } as EngineState)
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
@@ -83,7 +88,7 @@ const NOTICE: Origin = { priority: NOTICE_PRIORITY }
 
 /** `cacheAs` keeps the synthesized clip at that path for the next time; `seq` numbers speech in the order queued. */
 type Sentence = Origin & { text: string; generation: number; seq: number; cacheAs?: string }
-type Clip = Origin & { file: string; generation: number; seq: number; isCached?: boolean }
+type Clip = Origin & { text: string; file: string; generation: number; seq: number; isCached?: boolean }
 
 export const register: Register = (on, options) => {
   let isWindows = false
@@ -112,6 +117,10 @@ export const register: Register = (on, options) => {
   let quietThrough = 0
   // Called once nothing is left to play: a session holding the floor gives it up.
   let onAllPlayed = () => {}
+  // Set by session.start: publishes that nothing is left to say.
+  let onIdle = () => {}
+  // Set by session.start: writes the published state again after /clear, resume or /branch reset it.
+  let republishState = () => {}
   const track = (origin: Origin) => {
     const key = origin.step ?? 0
     unplayed.set(key, (unplayed.get(key) ?? 0) + 1)
@@ -122,7 +131,10 @@ export const register: Register = (on, options) => {
     const count = (unplayed.get(key) ?? 1) - 1
     if (count > 0) unplayed.set(key, count)
     else unplayed.delete(key)
-    if (unplayed.size === 0) onAllPlayed()
+    if (unplayed.size === 0) {
+      onAllPlayed()
+      onIdle()
+    }
   }
   const priorityOf = (clip: Origin) => (clip.step !== undefined && answerSteps.has(clip.step) ? ANSWER_PRIORITY : clip.priority)
   // Stream text is known to come before a tool call once a later response starts: only then does it wait within the limit.
@@ -177,6 +189,8 @@ export const register: Register = (on, options) => {
   /** Invalidates queued speech and closes the active synthesis and playback streams. */
   const stop = async () => {
     generation += 1
+    // Shown at once: what was queued is cleaned up after, which can take seconds.
+    onIdle()
     await Promise.all([synthesisProcess.stop(), playbackProcess.stop(), floorProcess.stop()])
   }
 
@@ -184,7 +198,7 @@ export const register: Register = (on, options) => {
   const queueNotice = (text: string) => {
     if (text === "") return
     const cached = cachedNotices.get(text)
-    if (cached !== undefined) return clips.push({ ...NOTICE, file: cached, generation, seq: track(NOTICE), isCached: true })
+    if (cached !== undefined) return clips.push({ ...NOTICE, text, file: cached, generation, seq: track(NOTICE), isCached: true })
     sentences.push({ ...NOTICE, text, generation, seq: track(NOTICE), cacheAs: `${directory}/notice-${noticeCount++}.wav` })
   }
 
@@ -258,6 +272,9 @@ export const register: Register = (on, options) => {
 
   const hasUnplayedBefore = (step: number) => [...unplayed.keys()].some(earlier => earlier >= turnFirstStep && earlier < step)
 
+  /** What of a turn's answer is read: its summary line when it opens with one and the setting is on. */
+  const answerText = (answer: string) => (config.summary ? summaryOf(answer) : undefined) ?? answer
+
   /** Reads `text` again from the start, whole: whatever is being read stops. */
   const replay = async (text: string) => {
     await stop()
@@ -289,16 +306,47 @@ export const register: Register = (on, options) => {
     let clipCount = 0
     let lastErrorAt = 0
 
+    // Counts what was learned of the engine: a check whose answer comes after a later synthesis is stale.
+    let engineNews = 0
     const noteEngine = (error?: unknown) => {
+      engineNews += 1
       const issue = error === undefined ? undefined : `${config.engine} ${/is not set/.test(String(error)) ? "unset" : "down"}`
       showEngineIssue(issue)
+      if (issue === undefined) publishEngine("ok")
     }
     // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
     const showEngineIssue = (issue: string | undefined) => {
       if (issue === engineIssue) return
       engineIssue = issue
       $.ui.status(issue)
+      if (issue !== undefined) publishEngine(/unset$/.test(issue) ? "unset" : "down")
     }
+    // Published one write after another: a slow write never lands after the one that followed it.
+    let stateWrites = Promise.resolve()
+    const publish = (write: () => Promise<unknown>) => {
+      stateWrites = stateWrites.then(write).then(() => undefined, () => undefined)
+    }
+    // Published as it changes, like the speech below.
+    let shownEngine = ""
+    const publishEngine = (status: EngineState["status"]) => {
+      const published: EngineState = { name: config.engine, voice: engine.voice, status }
+      const key = JSON.stringify(published)
+      if (key === shownEngine) return
+      shownEngine = key
+      publish(() => update($, engineState, () => published))
+    }
+    // Published as it changes; the same state twice is written once.
+    let shownSpeech = ""
+    let lastSpeech: SpeechState = { state: "idle", text: null }
+    const publishSpeech = (speech: SpeechState) => {
+      lastSpeech = speech
+      const key = JSON.stringify(speech)
+      if (key === shownSpeech) return
+      shownSpeech = key
+      publish(() => update($, speechState, () => speech))
+    }
+    onIdle = () => publishSpeech({ state: "idle", text: null })
+    publishSpeech({ state: "idle", text: null })
     // The last module's line stays after a reload.
     $.ui.status(undefined)
 
@@ -324,16 +372,21 @@ export const register: Register = (on, options) => {
           continue
         }
         synthesizing = sentence
+        // Nothing live waiting or playing: the next sentence is being synthesized, which can take minutes.
+        // Queued clips are not counted: ones given way to stay queued, and a live one is taken at once.
+        if (playing === undefined || !isLive(playing)) publishSpeech({ state: "preparing", text: null })
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => isLive(sentence)
+        // A result of the engine before a switch says nothing of the one in use now.
+        const used = engine
         let isFallback = false
         let isHandedOff = false
         try {
           try {
             await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
-            if (isCurrent()) noteEngine()
+            if (isCurrent() && used === engine) noteEngine()
           } catch (error) {
-            if (isCurrent()) noteEngine(error)
+            if (isCurrent() && used === engine) noteEngine(error)
             if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
             isFallback = true
             await synthesize($, synthesisProcess, fallback, sentence.text, file, isCurrent)
@@ -353,7 +406,7 @@ export const register: Register = (on, options) => {
           const isCached = sentence.cacheAs !== undefined && !isFallback
           if (isCached) cachedNotices.set(sentence.text, file)
           const { generation: clipGeneration, step, priority, seq } = sentence
-          clips.push({ file, generation: clipGeneration, step, priority, seq, isCached })
+          clips.push({ text: sentence.text, file, generation: clipGeneration, step, priority, seq, isCached })
           isHandedOff = true
         } catch (error) {
           await $.process.run(removeFilesCommand([file], isWindows))
@@ -453,7 +506,10 @@ export const register: Register = (on, options) => {
         if (!isLive(clip)) return
         const priority = priorityOf(clip)
         if (isBeforeTool(clip) && clip.seq <= quietThrough) return
-        if (isFloorBroken || !config.sharePlayback) return void (await playbackProcess.read($.process.spawn({ argv: play })))
+        if (isFloorBroken || !config.sharePlayback) {
+          publishSpeech({ state: "playing", text: clip.text })
+          return void (await playbackProcess.read($.process.spawn({ argv: play })))
+        }
         if (!isHoldingFloor) {
           // Only text before a tool call waits within a limit: a notice or an answer is never dropped.
           const now = await $.clock.now()
@@ -465,6 +521,7 @@ export const register: Register = (on, options) => {
             return
           }
           waiting = { clip, priority, isLimited: deadline !== undefined }
+          publishSpeech({ state: "waiting", text: clip.text })
           const waited = await floorProcess.read($.process.spawn({ argv: acquireCommand(isWindows, floorName, priority, limit) }))
           waiting = undefined
           // Cleared on every way out, a stop's included: a flag left set would keep later waits from restarting.
@@ -491,6 +548,7 @@ export const register: Register = (on, options) => {
           }
         }
         heldPriority = priority
+        publishSpeech({ state: "playing", text: clip.text })
         const played = await keepFloor(playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) })))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
         if (floorOutcome(played.code, played.stderr) !== undefined) {
@@ -515,6 +573,13 @@ export const register: Register = (on, options) => {
             playing = undefined
           }
         }
+        // Published before the files are removed, which can take seconds (PowerShell on Windows).
+        // Counted by speech, not by response: one response's sentences share a key.
+        // A clip given way to (not one a stop dropped) leaves the answer that replaces it being synthesized.
+        if (clip.generation === generation) {
+          const isMore = [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1
+          publishSpeech(isMore ? { state: "preparing", text: null } : { state: "idle", text: null })
+        }
         const files = [`${clip.file}.v.wav`]
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(removeFilesCommand(files, isWindows))
@@ -525,18 +590,28 @@ export const register: Register = (on, options) => {
     // Checked at once, so a start or an engine switch shows a dead engine before anything is read.
     recheckEngine = () => {
       showEngineIssue(undefined)
-      if (!isEnabled) return
+      if (!isEnabled) return publishEngine("off")
+      publishEngine("checking")
       const checked = engine
+      const news = ++engineNews
       void checkEngine($, checked).then(state => {
-        if (checked === engine && state !== "ok") showEngineIssue(`${config.engine} ${state}`)
+        if (checked !== engine || news !== engineNews) return
+        if (state === "ok") publishEngine("ok")
+        else showEngineIssue(`${config.engine} ${state}`)
       })
+    }
+    republishState = () => {
+      shownSpeech = ""
+      shownEngine = ""
+      publishSpeech(lastSpeech)
+      recheckEngine()
     }
     recheckEngine()
 
     await $.command.register({
       name: "tts",
-      description: "Read replies aloud: on, off, stop, test, replay, mode, engine, voice, speed, volume, pin, unpin, config, help",
-      argumentHint: "[on|off|stop|test [text]|replay [select]|mode|engine|voice|speed|volume [value]|pin|unpin|config|help]",
+      description: "Read replies aloud: on, off, stop, test, replay, mode, summary, engine, voice, speed, volume, pin, unpin, config, help",
+      argumentHint: "[on|off|stop|test [text]|replay [select]|mode|summary [on|off]|engine|voice|speed|volume [value]|pin|unpin|config|help]",
       // `/tts stop` has to land while a reply is still being read.
       immediate: true,
     })
@@ -559,6 +634,7 @@ export const register: Register = (on, options) => {
     if (directory === "") directory = await prepareDirectory($, isWindows)
     else await update($, audioDirectory, () => directory)
     await update($, floorId, () => floorName)
+    republishState()
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -636,6 +712,13 @@ export const register: Register = (on, options) => {
         }
         return { text: await commit($, changeOf("mode", name), applyPins) }
       }
+      case "summary": {
+        const value = rest[0]
+        if (value === undefined) return { text: `summary: ${config.summary ? "on" : "off"} (/tts summary on | off)` }
+        if (value !== "on" && value !== "off") return { text: "summary is on or off" }
+        const set = await $.config.set({ key: "tts.summary", value: value === "on" })
+        return { text: "deny" in set && set.deny ? set.deny : `summary: ${config.summary ? "on" : "off"} → ${value}` }
+      }
       case "speed":
       case "volume": {
         const value = rest[0]
@@ -687,7 +770,7 @@ export const register: Register = (on, options) => {
         const marks = await Promise.all([answerMark($, engine), fallback && answerMark($, fallback)])
         return {
           text: [
-            `${isEnabled ? "on" : "off"} (mode: ${config.mode})`,
+            `${isEnabled ? "on" : "off"} (mode: ${config.mode}, summary: ${config.summary ? "on" : "off"})`,
             `engine: ${marks[0]} ${config.engine} (${engine.voice})${config.fallback ? `, fallback: ${marks[1]} ${config.fallback}` : ""}`,
             `speed: ${options.speed}, volume: ${config.volume}`,
             ...(pins[cwd] === undefined ? [] : [`engine and voice pinned to ${cwd} (/tts unpin)`]),
@@ -748,11 +831,15 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // Asks the model to write what reads well aloud; notify mode reads none of its text.
+  // Asks the model to write what reads well aloud, and a summary to read in its place; notify mode reads none of its text.
   on("prompt.compose", async ($, e, next) => {
     const composed = await next(e)
-    if (!isEnabled || config.mode === "notify" || config.modelPrompt === "") return composed
-    return { sections: [...composed.sections, { id: "tts:spoken", text: config.modelPrompt, scope: "session" as const }] }
+    if (!isEnabled || config.mode === "notify") return composed
+    const added = [
+      ...(config.modelPrompt === "" ? [] : [{ id: "tts:spoken", text: config.modelPrompt, scope: "session" as const }]),
+      ...(config.summary ? [{ id: "tts:summary", text: SUMMARY_PROMPT, scope: "session" as const }] : []),
+    ]
+    return added.length === 0 ? composed : { sections: [...composed.sections, ...added] }
   }).catch(($, e, next) => next(e))
 
   on("turn.start", async ($, e, next) => {
@@ -777,12 +864,12 @@ export const register: Register = (on, options) => {
         // Only this turn's speech gives way: an earlier turn's answer still playing reads on before this one.
         await skipTurnSpeech()
         const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
-        enqueue(toSentences(e.answer), budget)
+        enqueue(toSentences(answerText(e.answer)), budget)
         finishResponse(budget)
       }
       if (config.mode === "final" && e.reason === "answer") {
         const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
-        enqueue(toSentences(e.answer), budget)
+        enqueue(toSentences(answerText(e.answer)), budget)
         finishResponse(budget)
       }
       const notice = TURN_NOTICES[e.reason]
@@ -823,6 +910,8 @@ export const register: Register = (on, options) => {
     // Text of the response before waits as text before a tool call from now on.
     refreshWait()
     const splitter = new SpeechSplitter()
+    // A response opening with a summary line is heard as that line alone.
+    const summary = config.summary ? new SummaryFilter() : undefined
     const responseGeneration = generation
     const queueResponse = (texts: readonly Spoken[]) => {
       if (!isTurnMuted && responseGeneration === generation) enqueue(texts, budget)
@@ -831,9 +920,9 @@ export const register: Register = (on, options) => {
     try {
       for await (const chunk of stream) {
         if (chunk.kind === "text") {
-          if (block !== undefined && block !== chunk.index) queueResponse(splitter.flush())
+          if (block !== undefined && block !== chunk.index) queueResponse([...splitter.push(summary?.flush() ?? ""), ...splitter.flush()])
           block = chunk.index
-          queueResponse(splitter.push(chunk.text))
+          queueResponse(splitter.push(summary === undefined ? chunk.text : summary.push(chunk.text)))
         }
         // The response's last chunk says it ends calling a tool: its text comes before one from now on.
         if (chunk.kind === "stop" && chunk.stopReason === "tool_use" && budget.step !== undefined) {
@@ -844,6 +933,9 @@ export const register: Register = (on, options) => {
       }
     } finally {
       // Runs even when the engine stops pulling after the last chunk: the line without a newline is said too.
+      queueResponse(splitter.push(summary?.flush() ?? ""))
+      // Text before a tool call is no answer: what followed its summary line is read too.
+      if (summary !== undefined && budget.step !== undefined && toolSteps.has(budget.step)) queueResponse(splitter.push(summary.release()))
       queueResponse(splitter.flush())
       if (!isTurnMuted && responseGeneration === generation) finishResponse(budget)
     }

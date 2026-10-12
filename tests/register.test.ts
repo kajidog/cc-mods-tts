@@ -1,6 +1,8 @@
 import type { On, ProcessSpawnRequest, SessionMessage, TurnStepResult } from "claude-code"
 import { expect, test } from "claude-code/testing"
 
+import { SUMMARY_PROMPT } from "../hooks/summary"
+
 const options = { engine: "command", command: "synth {out}", player: "aplay" }
 const start = { cwd: "/review", surface: "terminal" as const, isInteractive: true }
 const command = (args: string) => ({ command: "tts", args, origin: { kind: "composer" as const }, presentation: { isFullscreen: false, columns: 80 } })
@@ -39,8 +41,12 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   on("ui.log", () => ({ value: undefined }))
   on("turn.start", (_, e) => ({ turnId: e.turnId }))
   on("turn.complete", (_, e) => ({ text: e.answer }))
-  on("process.run", (_, e) => {
+  // A test may hold the engine check's answer and the removal of audio files, and make synthesis fail.
+  const engine = { check: Promise.resolve(), cleanup: Promise.resolve(), synthesisExit: 0 }
+  on("process.run", async (_, e) => {
     commands.push([...e.argv])
+    if (e.argv[3] === "probe") await engine.check
+    if (e.argv[0] === "rm") await engine.cleanup
     let stdout = ""
     if (e.argv[0] === "mktemp") stdout = `/tmp/claude-tts-test${++directories}\n`
     else if (e.argv.at(-1)?.includes("CreateDirectory")) stdout = `C:\\Users\\日本語 Test\\Temp\\claude-tts-test${++directories}\r\n`
@@ -53,6 +59,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   on("clock.now", () => ({ value: clock.now }))
   on("process.spawn", async function* (_, e, next) {
     processes.push(e)
+    if (e.argv[0] === "synth" && engine.synthesisExit !== 0) return { value: { code: engine.synthesisExit, signal: null } }
     const kind = floorKind(e.argv)
     if (kind !== undefined) {
       const code = floor.exit(kind, e.argv)
@@ -75,7 +82,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { code: 0, signal: null } }
   })
   return {
-    commands, processes, started, cancelled, floor, clock,
+    commands, processes, started, cancelled, floor, clock, engine,
     /** Waits until synthesis and playback stop asking the host for anything. */
     idle: async () => {
       for (let seen = -1; seen !== commands.length + processes.length;) {
@@ -686,11 +693,236 @@ const expectSections = (expected: string[]): NonNullable<Parameters<typeof test>
   expect(sections.map(section => `${section.id}:${section.text}`)).toEqual(expected)
 }
 
-test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。" } }, expectSections(["intro:x", "tts:spoken:日本語で。"]))
+test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。" } }, expectSections(["intro:x", "tts:spoken:日本語で。", `tts:summary:${SUMMARY_PROMPT}`]))
 
-for (const [name, extra] of [["an empty prompt", { modelPrompt: "" }], ["notify mode", { mode: "notify" }], ["off", { enabled: false }]] as const) {
+test("asks for no summary with the summary setting off", { options: { ...options, modelPrompt: "日本語で。", summary: false } }, expectSections(["intro:x", "tts:spoken:日本語で。"]))
+
+for (const [name, extra] of [["an empty prompt and no summary", { modelPrompt: "", summary: false }], ["notify mode", { mode: "notify" }], ["off", { enabled: false }]] as const) {
   test(`adds nothing to the system prompt with ${name}`, { options: { ...options, ...extra } }, expectSections(["intro:x"]))
 }
+
+const summarized = "**要約**: 直しました。\n\n詳しくはこうです。最後に確認します。"
+
+test("in final, an answer opening with a summary line is heard as that line alone", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(summarized))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["直しました。"])
+})
+
+test("with the summary setting off, the whole answer is read", { options: { ...options, mode: "final", summary: false } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed(summarized))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["要約: 直しました。", "詳しくはこうです。", "最後に確認します。"])
+})
+
+test("in stream, text before a tool call is read and the answer only as its summary line", { options }, async ($, on) => {
+  const observed = host(on)
+  on("turn.step", async function* (_, e) {
+    const pieces = e.index === 0 ? ["調べます。\n"] : ["**要約**: 直し", "ました。\n\n詳しくは", "こうです。"]
+    for (const [ref, text] of pieces.entries()) yield { kind: "text", ref, index: 0, text }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.idle()
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("**要約**: 直しました。\n\n詳しくはこうです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["調べます。", "直しました。"])
+})
+
+test("in stream, the answer read again in place of earlier text is read as its summary line", { options }, async ($, on) => {
+  const observed = host(on, "途中です。")
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "途中です。" : summarized }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.started
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed(summarized))
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["途中です。", "直しました。"])
+})
+
+test("publishes what is playing and the engine in use for other mods to show", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const published: Record<string, unknown> = {}
+  on("state.set", (_, e, next) => {
+    published[e.key] = e.value
+    return next(e)
+  })
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  await $.session.start(start)
+  await settle()
+  expect(published.engine).toEqual({ name: "command", voice: "synth {out}", status: "ok" })
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  expect(published.speech).toEqual({ state: "playing", text: "答えです。" })
+  observed.floor.unblock()
+  await observed.idle()
+  await settle()
+  expect(published.speech).toEqual({ state: "idle", text: null })
+})
+
+test("in stream, text before a tool call opening with a summary marker is still read whole", { options }, async ($, on) => {
+  const observed = host(on)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "Summary: 調べます。\n手順はこうです。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["調べます。", "手順はこうです。"])
+})
+
+test("publishes preparing while the first sentence is synthesized", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on, "答えです。")
+  const published: Record<string, unknown> = {}
+  on("state.set", (_, e, next) => {
+    published[e.key] = e.value
+    return next(e)
+  })
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.started
+  await settle()
+  expect(published.speech).toEqual({ state: "preparing", text: null })
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await settle()
+  expect(published.speech).toEqual({ state: "idle", text: null })
+})
+
+test("publishes its state again after /clear resets it", { options }, async ($, on) => {
+  host(on)
+  const published: string[] = []
+  on("state.set", (_, e, next) => {
+    published.push(e.key)
+    return next(e)
+  })
+  await $.session.start(start)
+  await settle()
+  published.length = 0
+  await $.classic.SessionStart({ source: "clear" })
+  await settle()
+  expect(published).toContain("speech")
+  expect(published).toContain("engine")
+})
+
+test("an engine check answering after a failed synthesis does not report the engine fine", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const published: unknown[] = []
+  on("state.set", (_, e, next) => {
+    if (e.key === "engine") published.push(e.value)
+    return next(e)
+  })
+  // The check at start answers only once the synthesis has failed.
+  let answerCheck = () => {}
+  observed.engine.check = new Promise<void>(resolve => { answerCheck = resolve })
+  observed.engine.synthesisExit = 1
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  answerCheck()
+  await settle()
+  expect(published.at(-1)).toEqual({ name: "command", voice: "synth {out}", status: "down" })
+})
+
+/** Records each speech state published, latest last. */
+function speechStates(on: On) {
+  const states: unknown[] = []
+  on("state.set", (_, e, next) => {
+    if (e.key === "speech") states.push(e.value)
+    return next(e)
+  })
+  return states
+}
+
+test("publishes preparing while the next sentence of the same response is synthesized", { options }, async ($, on) => {
+  const observed = host(on, "二文目。")
+  const states = speechStates(on)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "一文目。二文目。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* One response, two sentences. */ }
+  await observed.started
+  await observed.idle()
+  expect(states.at(-1)).toEqual({ state: "preparing", text: null })
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
+test("publishes preparing while the answer replacing earlier text is synthesized", { options }, async ($, on) => {
+  const observed = host(on, "答えです。")
+  const states = speechStates(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "一文目。二文目。三文目。" : "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call, synthesized and queued. */ }
+  await observed.idle()
+  expect(states.at(-1)).toEqual({ state: "playing", text: "一文目。" })
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("答えです。"))
+  await observed.started
+  await observed.idle()
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "preparing", text: null })
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
+test("publishes idle once the last clip has played, before its files are removed", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const states = speechStates(on)
+  let cleanUp = () => {}
+  observed.engine.cleanup = new Promise<void>(resolve => { cleanUp = resolve })
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "idle", text: null })
+  expect(states).toContainEqual({ state: "playing", text: "答えです。" })
+  cleanUp()
+  await observed.idle()
+})
+
+test("publishes idle as soon as speech is stopped, before what was queued is cleaned up", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  const states = speechStates(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  expect(states.at(-1)).toEqual({ state: "playing", text: "答えです。" })
+  let cleanUp = () => {}
+  observed.engine.cleanup = new Promise<void>(resolve => { cleanUp = resolve })
+  await $.command.run(command("stop"))
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "idle", text: null })
+  cleanUp()
+  await observed.idle()
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "idle", text: null })
+})
 
 test("replay reads the last answer whole, past the response budget", { options: { ...options, maxCharsPerTurn: 10 } }, async ($, on) => {
   const observed = host(on)

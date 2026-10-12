@@ -17,6 +17,24 @@ export type Picker = {
   page?: number
 }
 
+/**
+ * What this session is saying, for another mod to show; tts draws none of it.
+ * idle: nothing left to say. preparing: the next sentence is being synthesized.
+ * waiting: a clip waits for another session to finish. playing: a clip plays.
+ */
+export type SpeechState = {
+  state: "idle" | "preparing" | "waiting" | "playing"
+  /** The sentence waiting or playing, as sent to the engine; null otherwise. */
+  text: string | null
+}
+
+/** The engine in use, for another mod to show; `status` is "off" while tts is off. */
+export type EngineState = {
+  name: string
+  voice: string
+  status: "checking" | "ok" | "down" | "unset" | "off"
+}
+
 declare module "claude-code" {
   interface PluginState {
     tts: {
@@ -26,6 +44,10 @@ declare module "claude-code" {
       audioDirectory: string | null
       /** Names this session on the floor other sessions share, so a reload keeps holding it. */
       floorId: string | null
+      /** Published for other mods: what this session is saying. */
+      speech: SpeechState
+      /** Published for other mods: the engine in use and whether it answers. */
+      engine: EngineState
     }
   }
 }
