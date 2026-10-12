@@ -6,11 +6,27 @@ Claude Code の mod（関数フックのプラグイン）。Claude の返答を
 - `turn.step` の text チャンクを文に分割し、合成と再生をパイプラインで流す（コードブロック・表・URL は読み上げから除外してます）
 - エンジン: [VOICEVOX](https://voicevox.hiroshiba.jp/) 互換 / [Irodori-TTS](https://github.com/Aratako/Irodori-TTS-Server) / 任意コマンド
 
-読み上げ用のテキストでは、箇条書きの印を除き、括弧を空白に置き換えて中身を読みます。明確なファイルパスはファイル名と行番号に短縮します。負数・小数・`C++`・`--help` など、意味を持つ記号は残します。
+コードブロック・表・URL は読まず、パスや識別子は聞き取りやすい形に直して読みます。
 
-コードブロックと表は飛ばし、そこで「コードは省略します。」「表は省略します。」と言います。引用は最初の文に「引用、」を付けて読み、引用の中のコードや表も飛ばします。`SKIPPED_CODE` や `maxCharsPerTurn` のような識別子は単語の間にスペースを入れて読みます（`URLs`・`SQLite`・`iPhone` のような名前は分けません）。12文字以上のハッシュは先頭7文字、UUID は先頭8文字だけ読みます。`<kbd>` や `<br>` などのよく使う HTML タグとコメントは読まず、タグの中の文字だけ読みます。
+<details>
+<summary>読み方の一覧</summary>
 
-絵文字は消さずにエンジンに任せています（VOICEVOX は読み飛ばします）。読み方をさらに変えたい場合は、`engine=command` でスクリプトを挟めます。
+| 書かれ方 | 読み方 |
+|---|---|
+| コードブロック・表 | 飛ばして「コードは省略します。」「表は省略します。」と言う |
+| 引用 | 最初の文に「引用、」を付けて読む。中のコードや表は飛ばす |
+| URL・リンク | URL は読まない。リンクは表示される文字だけ読む |
+| 箇条書きの印・括弧 | 印は読まない。括弧は外して中身を読む |
+| ファイルパス | ファイル名と行番号だけ読む |
+| `maxCharsPerTurn` などの識別子 | 単語に分けて読む（`SQLite`・`iPhone` などの名前は分けない） |
+| 12文字以上のハッシュ・UUID | 先頭7文字・8文字だけ読む |
+| `<kbd>` `<br>` などの HTML タグ・コメント | タグは読まず、中の文字だけ読む |
+| 負数・小数・`C++`・`--help` | 記号を残して読む |
+| 絵文字 | エンジンに任せる（VOICEVOX は読み飛ばす） |
+
+読み方をさらに変えたい場合は、`engine=command` でスクリプトを挟めます。
+
+</details>
 
 ## セットアップ
 
@@ -45,15 +61,10 @@ claude --plugin-dir ~/cc-mods-tts
 3. 声を変えたい場合は `/tts voice` で選ぶ（既定は「ずんだもん・ノーマル」）
 4. `/tts test` で鳴るか確認
 
-### Windows で使う場合
-
-Windows ネイティブの Claude Code で使えます。VOICEVOX も同じ Windows 上で起動すれば、既定の `http://localhost:50021` のまま接続できます。
-
-`player: auto` は `ffplay` があればそれを使い、なければ Windows 標準の PowerShell で再生します。この Mod のために WSL や `sh`・`mktemp` を追加する必要はありません。PowerShell 再生時の音量変更と、音声の前後の無音除去には `ffmpeg` が必要です。ない場合は元の音声を再生します。
-
-WSL 内のターミナルで動かす場合は Linux と同じ構成で、`powershell.exe` による Windows 側の再生も使えます。
-
 ### Irodori-TTS を使う場合
+
+<details>
+<summary>Irodori-TTS への切り替えと声の追加の手順</summary>
 
 1. [Irodori-TTS-Server](https://github.com/Aratako/Irodori-TTS-Server) を起動する
 2. 参照音声（例: `sample.wav`）をサーバー側の `voices/` に置く。拡張子を除いたファイル名（この例では `sample`）が声の ID になります
@@ -63,6 +74,54 @@ WSL 内のターミナルで動かす場合は Linux と同じ構成で、`power
 `voices/` は Irodori-TTS-Server 側のフォルダです。`IRODORI_VOICES_DIR` を設定している場合は、そのフォルダに置いてください。Irodori は声を選ぶまで読み上げができません。
 
 対応する音声形式やアップロード API など、詳しくは[公式の音声追加・管理手順（Voice Management）](https://github.com/Aratako/Irodori-TTS-Server#voice-management)を参照してください。
+
+</details>
+
+### OS 標準の音声を使う場合（engine=command）
+
+VOICEVOX などを入れなくても、OS に入っている音声で読めます。エンジンは VOICEVOX のままにして、OS の音声を予備にもできます。`TTS: Command` を設定し、`/config` の `TTS: Fallback engine` を `command` にしておくと、VOICEVOX が起動していないときや落ちたときでも、その文を OS の音声で読みます。VOICEVOX が戻れば、次の文からまた VOICEVOX で読みます。VOICEVOX が使えない間は、ステータス行に `⚠ tts: voicevox down` と出ます。
+
+<details>
+<summary>macOS・Windows・Linux のコマンド例</summary>
+
+`/config` の `TTS: Command` に次のどれかを入れて、`/tts engine command` で切り替えます。コマンドは空白で区切って引数にするので、引数（パスを含む）に空白は入れられません。`{out}` は書き出す wav のパスに置き換わり、読む文は標準入力で渡ります。
+
+**macOS**（`say`。日本語の声 Kyoko がない場合は、システム設定 → アクセシビリティ → 読み上げコンテンツ で追加）
+
+```
+say -v Kyoko -f - --file-format=WAVE --data-format=LEI16@22050 -o {out}
+```
+
+**Windows**（標準の音声合成。日本語の声 Haruka は日本語版 Windows に入っています）
+
+次の内容を `C:\tts\speak.ps1` などに保存します（空白を含まないパスに置いてください）。
+
+```powershell
+param([string]$Out)
+Add-Type -AssemblyName System.Speech
+[Console]::InputEncoding = [Text.Encoding]::UTF8
+$text = [Console]::In.ReadToEnd()
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$synth.SetOutputToWaveFile($Out)
+$synth.Speak($text)
+$synth.Dispose()
+```
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\tts\speak.ps1 {out}
+```
+
+WSL から使う場合は、`{out}` が Linux のパスのまま渡るので、このままでは使えません。
+
+**Linux**（[eSpeak NG](https://github.com/espeak-ng/espeak-ng)。日本語はかなり機械的な読み方です）
+
+```
+espeak-ng -v ja --stdin -w {out}
+```
+
+どれも `TTS: Speed` は効きません。速さは各コマンドのオプション（`say -r`、`espeak-ng -s` など）で変えてください。
+
+</details>
 
 ### アンインストール
 
@@ -130,18 +189,28 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 ### 複数のセッション
 
-同じマシンで複数の Claude Code セッションが読み上げても、音声は重なりません。一時フォルダの共有ロックを取ったセッションだけが再生し、ほかのセッションは順番を待ちます。追加のセットアップは要りません。`/config` の `TTS: Take turns with other sessions` をオフにすると、この仕組みを使わずにすぐ再生します。
+同じマシンで複数のセッションが読み上げても、音声は重ならず順番に再生します。設定はいりません。`/config` の `TTS: Take turns with other sessions` をオフにすると、待たずにすぐ再生します。
 
-- 優先度は 通知・ダイアログ・`/tts` コマンド ＞ 最終回答 ＞ ツール前の発言 の順です。読んでいるセッションは、文の切れ目でより優先度の高い待ち手に順番を譲ります（読みかけの文は最後まで読みます）。
-- 待ち時間の上限（`maxWaitSeconds`）を超えたら捨てるのは、ツール前の発言だけです。通知と最終回答は、待っても必ず読みます。
-- ダイアログや `/tts stop` で止まるのは、そのセッションの読み上げだけです。ほかのセッションの再生には影響しません。
-- WSL 内のセッションと Windows ネイティブのセッションは、別々のロックを使います（同時に動かすと重なることがあります）。
+<details>
+<summary>順番の決まり方</summary>
 
-停止すると Mod 側の合成リクエストも中断します。ただし、TTS サーバーが切断後も計算を続ける場合、その計算の終了までは次の合成が待たされることがあります。
+- 優先度は 通知・ダイアログ・`/tts` コマンド ＞ 最終回答 ＞ ツール前の発言 の順です。読んでいるセッションは、文の切れ目でより優先度の高い待ち手に譲ります（読みかけの文は最後まで読みます）。
+- 待ち時間の上限（`maxWaitSeconds`）を超えたら捨てるのは、ツール前の発言だけです。通知と最終回答は必ず読みます。
+- ダイアログや `/tts stop` で止まるのは、そのセッションの読み上げだけです。
+- WSL 内と Windows ネイティブのセッションは別々に順番を取ります（同時に動かすと重なることがあります）。
 
-`ffplay` / `powershell` では、再生終了時に語尾が途切れるのを抑えるため、無音除去後の WAV に0.2秒の無音を足します。この処理には `ffmpeg` が必要です。`ffmpeg` がない場合は、無音除去・追加を行わず元の音声を再生します。
+</details>
 
-WSL で `ffplay` を使うと、音声が WSLg（PulseAudio → RDP）を経由するため、負荷によって「ジリジリ」とノイズが混じることがあります。気になる場合は `/config` の `TTS: Player` を `powershell` にすると、Windows 側で直接再生するので改善します（文ごとに PowerShell を起動するため、文と文の間は少し空きます）。
+### 再生の補足
+
+<details>
+<summary>停止のタイミング・語尾の途切れ・WSL のノイズ</summary>
+
+- **停止:** 合成のリクエストも中断します。ただし TTS サーバーが切断後も計算を続ける場合は、終わるまで次の合成が待たされることがあります。
+- **語尾の途切れ:** `ffplay` / `powershell` では、無音を除いた WAV の後ろに0.2秒の無音を足します。`ffmpeg` が必要で、ない場合は元の音声をそのまま再生します。
+- **WSL のノイズ:** `ffplay` は WSLg を経由するため、「ジリジリ」とノイズが混じることがあります。`/config` の `TTS: Player` を `powershell` にすると改善します（文と文の間は少し空きます）。
+
+</details>
 
 ## 設定
 
