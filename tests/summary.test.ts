@@ -37,4 +37,13 @@ describe("SummaryFilter", () => {
     expect(feed(["**注意**: 消えます。", "\n続き"])).toBe("**注意**: 消えます。\n続き")
     expect(feed(["**要約**:", "\n直しました。"])).toBe("**要約**:\n直しました。")
   })
+
+  test("holds what follows a summary, for a response that turns out to call a tool", async () => {
+    const filter = new SummaryFilter()
+    expect(filter.push("**要約**: 調べます。\n手順は")).toBe("調べます。\n")
+    expect(filter.push("こうです。")).toBe("")
+    expect(filter.flush()).toBe("")
+    expect(filter.release()).toBe("手順はこうです。")
+    expect(filter.release()).toBe("")
+  })
 })

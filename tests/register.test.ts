@@ -769,6 +769,53 @@ test("publishes what is playing and the engine in use for other mods to show", {
   expect(published.speech).toEqual({ state: "idle", text: null })
 })
 
+test("in stream, text before a tool call opening with a summary marker is still read whole", { options }, async ($, on) => {
+  const observed = host(on)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: "Summary: 調べます。\n手順はこうです。" }
+    yield { kind: "stop", ref: 2, stopReason: "tool_use", usage: null }
+    return { ...stepResult, turnId: e.turnId, index: e.index, toolUses: [{ name: "Read", input: {} }], stopReason: "tool_use" as const }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call. */ }
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["調べます。", "手順はこうです。"])
+})
+
+test("publishes preparing while the first sentence is synthesized", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on, "答えです。")
+  const published: Record<string, unknown> = {}
+  on("state.set", (_, e, next) => {
+    published[e.key] = e.value
+    return next(e)
+  })
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.started
+  expect(published.speech).toEqual({ state: "preparing", text: null })
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await settle()
+  expect(published.speech).toEqual({ state: "idle", text: null })
+})
+
+test("publishes its state again after /clear resets it", { options }, async ($, on) => {
+  host(on)
+  const published: string[] = []
+  on("state.set", (_, e, next) => {
+    published.push(e.key)
+    return next(e)
+  })
+  await $.session.start(start)
+  await settle()
+  published.length = 0
+  await $.classic.SessionStart({ source: "clear" })
+  await settle()
+  expect(published).toContain("speech")
+  expect(published).toContain("engine")
+})
+
 test("replay reads the last answer whole, past the response budget", { options: { ...options, maxCharsPerTurn: 10 } }, async ($, on) => {
   const observed = host(on)
   on("session.messages", () => ({

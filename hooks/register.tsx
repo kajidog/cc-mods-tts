@@ -119,6 +119,8 @@ export const register: Register = (on, options) => {
   let onAllPlayed = () => {}
   // Set by session.start: publishes that nothing is left to say.
   let onIdle = () => {}
+  // Set by session.start: writes the published state again after /clear, resume or /branch reset it.
+  let republishState = () => {}
   const track = (origin: Origin) => {
     const key = origin.step ?? 0
     unplayed.set(key, (unplayed.get(key) ?? 0) + 1)
@@ -318,7 +320,9 @@ export const register: Register = (on, options) => {
     }
     // Published as it changes; the same state twice is written once.
     let shownSpeech = ""
+    let lastSpeech: SpeechState = { state: "idle", text: null }
     const publishSpeech = (speech: SpeechState) => {
+      lastSpeech = speech
       const key = JSON.stringify(speech)
       if (key === shownSpeech) return
       shownSpeech = key
@@ -351,6 +355,8 @@ export const register: Register = (on, options) => {
           continue
         }
         synthesizing = sentence
+        // Nothing waiting or playing: the first sentence is being synthesized, which can take minutes.
+        if (playing === undefined && clips.size === 0) publishSpeech({ state: "preparing", text: null })
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => isLive(sentence)
         let isFallback = false
@@ -570,6 +576,11 @@ export const register: Register = (on, options) => {
         else showEngineIssue(`${config.engine} ${state}`)
       })
     }
+    republishState = () => {
+      shownSpeech = ""
+      publishSpeech(lastSpeech)
+      recheckEngine()
+    }
     recheckEngine()
 
     await $.command.register({
@@ -598,6 +609,7 @@ export const register: Register = (on, options) => {
     if (directory === "") directory = await prepareDirectory($, isWindows)
     else await update($, audioDirectory, () => directory)
     await update($, floorId, () => floorName)
+    republishState()
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -896,7 +908,10 @@ export const register: Register = (on, options) => {
       }
     } finally {
       // Runs even when the engine stops pulling after the last chunk: the line without a newline is said too.
-      queueResponse([...splitter.push(summary?.flush() ?? ""), ...splitter.flush()])
+      queueResponse(splitter.push(summary?.flush() ?? ""))
+      // Text before a tool call is no answer: what followed its summary line is read too.
+      if (summary !== undefined && budget.step !== undefined && toolSteps.has(budget.step)) queueResponse(splitter.push(summary.release()))
+      queueResponse(splitter.flush())
       if (!isTurnMuted && responseGeneration === generation) finishResponse(budget)
     }
     return stream.result

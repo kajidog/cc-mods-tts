@@ -22,10 +22,12 @@ export function summaryOf(answer: string): string | undefined {
 
 /**
  * Lets streamed text through as `summaryOf` would read it: a response opening
- * with a summary line passes that line alone, any other passes whole.
+ * with a summary line passes that line alone, any other passes whole. The rest
+ * after a summary is held, for a response that turns out to call a tool.
  */
 export class SummaryFilter {
   private head = ""
+  private held = ""
   private state: "deciding" | "summary" | "rest" | "whole" = "deciding"
 
   push(text: string): string {
@@ -33,11 +35,13 @@ export class SummaryFilter {
       case "whole":
         return text
       case "rest":
+        this.held += text
         return ""
       case "summary": {
         const newline = text.indexOf("\n")
         if (newline < 0) return text
         this.state = "rest"
+        this.held += text.slice(newline + 1)
         return text.slice(0, newline + 1)
       }
       case "deciding": {
@@ -57,6 +61,13 @@ export class SummaryFilter {
     const line = this.head.trimStart()
     const held = this.state === "deciding" && line !== "" ? this.decide(line) : ""
     if (this.state === "summary") this.state = "rest"
+    return held
+  }
+
+  /** The text after the summary, held so far; a response calling a tool reads it after all. */
+  release(): string {
+    const held = this.held
+    this.held = ""
     return held
   }
 
