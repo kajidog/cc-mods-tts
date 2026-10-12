@@ -867,6 +867,28 @@ test("publishes preparing while the next sentence of the same response is synthe
   await observed.idle()
 })
 
+test("publishes preparing while the answer replacing earlier text is synthesized", { options }, async ($, on) => {
+  const observed = host(on, "答えです。")
+  const states = speechStates(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  on("turn.step", async function* (_, e) {
+    yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "一文目。二文目。三文目。" : "答えです。" }
+    return { ...stepResult, turnId: e.turnId, index: e.index }
+  })
+  await $.session.start(start)
+  for await (const _ of $.turn.step(step)) { /* Text before a tool call, synthesized and queued. */ }
+  await observed.idle()
+  expect(states.at(-1)).toEqual({ state: "playing", text: "一文目。" })
+  for await (const _ of $.turn.step({ ...step, index: 1 })) { /* The answer. */ }
+  await $.turn.complete(completed("答えです。"))
+  await observed.started
+  await observed.idle()
+  await settle()
+  expect(states.at(-1)).toEqual({ state: "preparing", text: null })
+  await $.command.run(command("stop"))
+  await observed.idle()
+})
+
 test("publishes idle as soon as speech is stopped, before what was queued is cleaned up", { options: { ...options, mode: "final" } }, async ($, on) => {
   const observed = host(on)
   const states = speechStates(on)

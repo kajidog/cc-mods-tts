@@ -367,18 +367,21 @@ export const register: Register = (on, options) => {
           continue
         }
         synthesizing = sentence
-        // Nothing waiting or playing: the first sentence is being synthesized, which can take minutes.
-        if ((playing === undefined || !isLive(playing)) && clips.size === 0) publishSpeech({ state: "preparing", text: null })
+        // Nothing live waiting or playing: the next sentence is being synthesized, which can take minutes.
+        // Queued clips are not counted: ones given way to stay queued, and a live one is taken at once.
+        if (playing === undefined || !isLive(playing)) publishSpeech({ state: "preparing", text: null })
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => isLive(sentence)
+        // A result of the engine before a switch says nothing of the one in use now.
+        const used = engine
         let isFallback = false
         let isHandedOff = false
         try {
           try {
             await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
-            if (isCurrent()) noteEngine()
+            if (isCurrent() && used === engine) noteEngine()
           } catch (error) {
-            if (isCurrent()) noteEngine(error)
+            if (isCurrent() && used === engine) noteEngine(error)
             if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
             isFallback = true
             await synthesize($, synthesisProcess, fallback, sentence.text, file, isCurrent)
@@ -569,7 +572,8 @@ export const register: Register = (on, options) => {
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(removeFilesCommand(files, isWindows))
         // Counted by speech, not by response: one response's sentences share a key.
-        if (isLive(clip) && [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1) publishSpeech({ state: "preparing", text: null })
+        // A clip given way to (not one a stop dropped) leaves the answer that replaces it being synthesized.
+        if (clip.generation === generation && [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1) publishSpeech({ state: "preparing", text: null })
         settle(clip)
       }
     })()
