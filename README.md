@@ -1,5 +1,7 @@
 # cc-mods-tts
 
+[![Latest Claude Code](https://github.com/kajidog/cc-mods-tts/actions/workflows/latest-claude-code.yml/badge.svg)](https://github.com/kajidog/cc-mods-tts/actions/workflows/latest-claude-code.yml)
+
 Claude Code の mod（関数フックのプラグイン）。Claude の返答をストリーミング中に一文ずつ読み上げます。
 
 - 対応プラットフォーム: macOS / Linux / Windows（ネイティブ・WSL）
