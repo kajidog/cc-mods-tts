@@ -693,7 +693,7 @@ const expectSections = (expected: string[]): NonNullable<Parameters<typeof test>
   expect(sections.map(section => `${section.id}:${section.text}`)).toEqual(expected)
 }
 
-test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。" } }, expectSections(["intro:x", "tts:spoken:日本語で。", `tts:summary:${SUMMARY_PROMPT}`]))
+test("asks the model to write for speech while replies are read", { options: { ...options, modelPrompt: "日本語で。", summary: true } }, expectSections(["intro:x", "tts:spoken:日本語で。", `tts:summary:${SUMMARY_PROMPT}`]))
 
 test("asks for no summary with the summary setting off", { options: { ...options, modelPrompt: "日本語で。", summary: false } }, expectSections(["intro:x", "tts:spoken:日本語で。"]))
 
@@ -703,7 +703,7 @@ for (const [name, extra] of [["an empty prompt and no summary", { modelPrompt: "
 
 const summarized = "**要約**: 直しました。\n\n詳しくはこうです。最後に確認します。"
 
-test("in final, an answer opening with a summary line is heard as that line alone", { options: { ...options, mode: "final" } }, async ($, on) => {
+test("in final, an answer opening with a summary line is heard as that line alone", { options: { ...options, mode: "final", summary: true } }, async ($, on) => {
   const observed = host(on)
   await $.session.start(start)
   await $.turn.complete(completed(summarized))
@@ -721,7 +721,7 @@ test("with the summary setting off, the whole answer is read", { options: { ...o
   expect(observed.spoken()).toEqual(["要約: 直しました。", "詳しくはこうです。", "最後に確認します。"])
 })
 
-test("in stream, text before a tool call is read and the answer only as its summary line", { options }, async ($, on) => {
+test("in stream, text before a tool call is read and the answer only as its summary line", { options: { ...options, summary: true } }, async ($, on) => {
   const observed = host(on)
   on("turn.step", async function* (_, e) {
     const pieces = e.index === 0 ? ["調べます。\n"] : ["**要約**: 直し", "ました。\n\n詳しくは", "こうです。"]
@@ -738,7 +738,7 @@ test("in stream, text before a tool call is read and the answer only as its summ
   expect(observed.spoken()).toEqual(["調べます。", "直しました。"])
 })
 
-test("in stream, the answer read again in place of earlier text is read as its summary line", { options }, async ($, on) => {
+test("in stream, the answer read again in place of earlier text is read as its summary line", { options: { ...options, summary: true } }, async ($, on) => {
   const observed = host(on, "途中です。")
   on("turn.step", async function* (_, e) {
     yield { kind: "text", ref: 1, index: 0, text: e.index === 0 ? "途中です。" : summarized }
@@ -774,7 +774,7 @@ test("publishes what is playing and the engine in use for other mods to show", {
   expect(published.speech).toEqual({ state: "idle", text: null })
 })
 
-test("in stream, text before a tool call opening with a summary marker is still read whole", { options }, async ($, on) => {
+test("in stream, text before a tool call opening with a summary marker is still read whole", { options: { ...options, summary: true } }, async ($, on) => {
   const observed = host(on)
   on("turn.step", async function* (_, e) {
     yield { kind: "text", ref: 1, index: 0, text: "Summary: 調べます。\n手順はこうです。" }

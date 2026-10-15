@@ -170,13 +170,13 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 ### 要約だけ読む
 
-既定では、Claude に「長い回答は1行目に `**要約**: …` で要約を書く」よう頼みます（stream / final モードのときだけシステムプロンプトに足します）。最終回答が要約の行で始まっていれば、その1行だけ読み、残りは読みません。要約がなければ、これまで通り回答を読みます。
+`/tts summary on`（`/config` の TTS: Read the summary only）にすると、Claude に「長い回答は1行目に `**要約**: …` で要約を書く」よう頼みます（stream / final モードのときだけシステムプロンプトに足します）。既定はオフです。最終回答が要約の行で始まっていれば、その1行だけ読み、残りは読みません。要約がなければ、これまで通り回答を読みます。
 
 - 要約は画面にもそのまま出ます。読み上げ専用の隠しテキストではないので、表示が崩れたり余計なトークンを使ったりしません。
 - 判定するのは回答の1行目だけです。`**要約**:`・`**要約:**`・`Summary:`・`TL;DR:` を目印にします。
 - stream モードでは、ツール前の発言はこれまで通り読み、最終回答だけ要約の行で止めます。
 - `/tts replay` は要約ではなく回答全体を読み直します。
-- `/tts summary off`（`/config` の TTS: Read the summary only）で、頼むのも要約だけ読むのもやめます。
+- `/tts summary off` で、頼むのも要約だけ読むのもやめます。
 
 どのモードでも、以下の操作待ちのダイアログが出たら読み上げを止めて通知します:
 
@@ -235,7 +235,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | TTS: Max wait for other sessions（`maxWaitSeconds`） | ほかのセッションが読み上げている間、ツール前の発言を待たせる最大秒数。超えたら捨てる。通知と最終回答は常に待って読む。0 で無制限 | 60 |
 | TTS: Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
 | TTS: Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
-| TTS: Read the summary only（`summary`） | 長い回答の1行目に要約を書くよう Claude に頼み、要約があればそれだけ読む（stream / final モード）。`/tts summary on` / `off` と同じ | true |
+| TTS: Read the summary only（`summary`） | 長い回答の1行目に要約を書くよう Claude に頼み、要約があればそれだけ読む（stream / final モード）。`/tts summary on` / `off` と同じ | false |
 | TTS: Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
 | TTS: Irodori voice（`irodoriVoice`） | Irodori の声（`/tts voice` で選べる） | （未設定） |
 | TTS: VOICEVOX URL（`voicevoxUrl`） | VOICEVOX 互換エンジンの URL（AivisSpeech は `http://localhost:10101`） | `http://localhost:50021` |

@@ -75,7 +75,7 @@ export function toConfig(options: PluginOptions): TtsConfig {
     maxWaitSeconds: Math.max(0, Number(options.maxWaitSeconds ?? 60) || 0),
     interruptOnPrompt: options.interruptOnPrompt === true,
     modelPrompt: String(options.modelPrompt ?? "").trim(),
-    summary: options.summary !== false,
+    summary: options.summary === true,
     notices: Object.fromEntries(
       Object.entries(NOTICE_OPTIONS).map(([notice, option]) => [notice, String(options[option] ?? "").trim()]),
     ) as Notices,

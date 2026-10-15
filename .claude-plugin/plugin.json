@@ -107,7 +107,7 @@
       "type": "boolean",
       "title": "TTS: Read the summary only",
       "description": "Ask Claude to open long answers with a summary line (**要約**: …) and read only that line where an answer has one (stream and final modes). /tts replay still reads the whole answer. /tts summary on and /tts summary off set this.",
-      "default": true
+      "default": false
     },
     "irodoriUrl": {
       "type": "string",
