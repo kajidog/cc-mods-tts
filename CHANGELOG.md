@@ -1,5 +1,11 @@
 # cc-mods-tts
 
+## 0.9.0
+
+### Minor Changes
+
+- 427796e: 「要約だけ読む」設定（`summary`）を既定でオフにしました。使うときは `/tts summary on` か `/config` の TTS: Read the summary only でオンにしてください。
+
 ## 0.8.0
 
 ### Minor Changes
