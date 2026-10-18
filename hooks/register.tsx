@@ -102,6 +102,10 @@ export const register: Register = (on, options) => {
   // `generation` moves on at every stop: queued work of an older one is dropped.
   let generation = 0
   let isTurnMuted = false
+  // The main loop's responses, counted in every mode; `$.tts` stopping drops the one streaming then,
+  // so a turn whose answer is that response does not read it at its end.
+  let responseCount = 0
+  let stoppedResponse = -1
   // Streamed responses are numbered from 1; `unplayed` counts each one's speech not yet played or
   // dropped, under 0 for speech of no response.
   let stepCount = 0
@@ -194,6 +198,12 @@ export const register: Register = (on, options) => {
     // Shown at once: what was queued is cleaned up after, which can take seconds.
     onIdle()
     await Promise.all([synthesisProcess.stop(), playbackProcess.stop(), floorProcess.stop()])
+  }
+
+  /** Stops as `stop` does, and drops the response streaming now: unlike `/tts stop`, the turn's later responses are read. */
+  const stopResponse = () => {
+    stoppedResponse = responseCount
+    return stop()
   }
 
   /** Queues `text` to be said next; called right after a stop, it plays first. */
@@ -309,12 +319,12 @@ export const register: Register = (on, options) => {
         const texts = toSentences(text)
         if (!texts.some(isSpoken)) return { isQueued: false, reason: "empty" }
         // Queued before the stop is awaited: a later call made meanwhile is said after this one, not before.
-        const stopped = interrupt === true ? stop() : undefined
+        const stopped = interrupt === true ? stopResponse() : undefined
         enqueue(texts)
         await stopped
         return { isQueued: true }
       },
-      stop: () => stop(),
+      stop: () => stopResponse(),
     }
     return { ...built, tts }
   })
@@ -886,20 +896,22 @@ export const register: Register = (on, options) => {
   on("turn.complete", async ($, e, next) => {
     if (e.reason === "aborted" && e.agentId === undefined) await stop()
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
+      // An answer streaming when `$.tts` stopped is not read at the turn's end either; a notice still is.
+      const isDropped = stoppedResponse === responseCount
       // Stream: text from before the answer still waiting gives way to the answer, read from its start.
       // Once the answer is being read, nothing earlier waits and it reads on: it is never said twice.
       if (config.mode === "stream" && e.reason === "answer") {
         answerSteps.add(stepCount)
         refreshWait()
       }
-      if (config.mode === "stream" && e.reason === "answer" && e.answer !== "" && hasUnplayedBefore(stepCount)) {
+      if (config.mode === "stream" && e.reason === "answer" && e.answer !== "" && !isDropped && hasUnplayedBefore(stepCount)) {
         // Only this turn's speech gives way: an earlier turn's answer still playing reads on before this one.
         await skipTurnSpeech()
         const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
         enqueue(toSentences(answerText(e.answer)), budget)
         finishResponse(budget)
       }
-      if (config.mode === "final" && e.reason === "answer") {
+      if (config.mode === "final" && e.reason === "answer" && !isDropped) {
         const budget: Budget = { spoken: 0, isCut: false, priority: ANSWER_PRIORITY }
         enqueue(toSentences(answerText(e.answer)), budget)
         finishResponse(budget)
@@ -935,6 +947,7 @@ export const register: Register = (on, options) => {
   // Speaks the main loop's text as it streams; thinking, tool calls and subagents stay silent.
   on("turn.step", async function* ($, e, next) {
     const stream = next(e)
+    if (e.agentId === undefined) responseCount += 1
     if (!isEnabled || config.mode !== "stream" || e.agentId !== undefined) return yield* stream
 
     // Each response has its own budget: text before a tool call does not use up the answer's.

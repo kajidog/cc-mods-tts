@@ -58,7 +58,10 @@ export type TtsSpeakResult = { isQueued: true } | { isQueued: false; reason: "of
  */
 export type Tts = {
   speak: (request: TtsSpeakRequest) => Promise<TtsSpeakResult>
-  /** Stops what is being said and drops what is queued, the rest of the response streaming now included. */
+  /**
+   * Stops what is being said and drops what is queued, the response streaming now included: the turn's
+   * end does not read it as the answer either, in any mode. The turn's later responses are read.
+   */
   stop: () => Promise<void>
 }
 
