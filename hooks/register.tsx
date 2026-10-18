@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register } from "claude-code"
 
-import type { EngineState, Picker, Setting, SpeechState } from "../types"
+import type { EngineState, Picker, Setting, SpeechState, Tts } from "../types"
 
 import { Channel } from "./channel"
 import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
@@ -287,6 +287,23 @@ export const register: Register = (on, options) => {
     if (budget.tail !== undefined && Array.from(budget.tail.text).length <= MAX_TAIL) say(budget.tail.quote + budget.tail.text, budget)
     budget.tail = undefined
   }
+
+  // Another mod has this session speak through `$.tts`, as a `/tts` command would: first among sessions, in any mode.
+  on("engine.create", async ($, e, next) => {
+    const built = await next(e)
+    const tts: Tts = {
+      speak: async ({ text, interrupt }) => {
+        if (!isEnabled) return { isQueued: false, reason: "off" }
+        const texts = toSentences(text)
+        if (texts.length === 0) return { isQueued: false, reason: "empty" }
+        if (interrupt === true) await stop()
+        enqueue(texts)
+        return { isQueued: true }
+      },
+      stop: () => stop(),
+    }
+    return { ...built, tts }
+  })
 
   on("session.start", async ($, e, next) => {
     const started = await next(e)

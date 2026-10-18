@@ -35,7 +35,35 @@ export type EngineState = {
   status: "checking" | "ok" | "down" | "unset" | "off"
 }
 
+/** What another mod asks this session to say through `$.tts.speak`. */
+export type TtsSpeakRequest = {
+  /** Markdown or plain text, formatted as `/tts test` formats it: code, tables and URLs are not read. */
+  text: string
+  /** Stop what is being said and queued first, so this is heard at once. Otherwise it is said after. */
+  interrupt?: boolean
+}
+
+/**
+ * Whether the text was queued; it resolves once queued, not once said (watch `speech` for that).
+ * off: tts is off. empty: formatting left nothing to read.
+ */
+export type TtsSpeakResult = { isQueued: true } | { isQueued: false; reason: "off" | "empty" }
+
+/**
+ * `$.tts`, for another mod to have this session speak. Speech asked for here goes first among
+ * sessions, as notices do, in any read mode, without the per-response character limit.
+ */
+export type Tts = {
+  speak: (request: TtsSpeakRequest) => Promise<TtsSpeakResult>
+  /** Stops what is being said and drops what is queued, the rest of the response streaming now included. */
+  stop: () => Promise<void>
+}
+
 declare module "claude-code" {
+  interface EngineInterface {
+    tts: Tts
+  }
+
   interface PluginState {
     tts: {
       /** The picker a `/tts` command without a value opened last; null before any. */
