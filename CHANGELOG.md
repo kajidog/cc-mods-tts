@@ -1,5 +1,11 @@
 # cc-mods-tts
 
+## 0.10.0
+
+### Minor Changes
+
+- 08b92a3: 別の Mod から読み上げさせられる `$.tts` を公開しました。`$.tts.speak({ text, interrupt })` で読み上げ、`$.tts.stop()` で止められます。
+
 ## 0.9.0
 
 ### Minor Changes
