@@ -306,6 +306,23 @@ API は early access のため、Claude Code の更新で変わることがあ�
 
 `ui.render` の中で `$.state.get` すると、値が変わるたびに描き直されます。書けるのはこの Mod だけです。
 
+### 別の Mod から読み上げる
+
+`$.tts` を公開しているので、別の Mod からこのセッションに読み上げさせられます。型は `types/index.d.ts` の `Tts` です。呼ぶ側の `plugin.json` の `dependencies` に `"tts"` を足すと、`$.tts` に型が付きます。
+
+```ts
+const result = await $.tts.speak({ text: "ビルドが終わりました。" })
+// { isQueued: true }、または { isQueued: false, reason: "off" | "empty" | "ended" }
+await $.tts.stop()
+```
+
+| メソッド | 内容 |
+|---|---|
+| `speak({ text, interrupt? })` | `text` を `/tts test` と同じ整形で読む（コードブロック・表・URL は読まない）。キューに入った時点で返り、読み終わりは待たない（`speech` の状態で分かる）。`interrupt: true` で、読んでいるものとキューを止めてすぐ読む（`stop()` と同じく、ストリーミング中の返答の残りも読まない） |
+| `stop()` | 読んでいるものとキューを止める。ストリーミング中の返答の残りも読まず、その返答がターンの回答なら、ターンの終わりにも読まない（final モードも同じ）。`/tts stop` と違い、次の応答からはまた読む |
+
+`speak` は読み上げモードに関係なく読み、1回の応答の文字数の上限もかかりません。複数のセッションの間では通知と同じく最優先です。`/tts off` の間は読まずに `reason: "off"`、セッションが終わった後は `reason: "ended"` を返します。セッションが始まる前に呼んだ分は、始まってから読みます。
+
 ### 変更履歴とリリース
 
 変更履歴は [CHANGELOG.md](CHANGELOG.md) にまとめています。[Changesets](https://changesets.dev/) で変更メモを集め、GitHub Actions がリリース用 PR を作成・更新します。
