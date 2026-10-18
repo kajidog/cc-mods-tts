@@ -254,6 +254,14 @@ export const register: Register = (on, options) => {
     }
   }
 
+  /** Whether `enqueue` says something for `text`: quote marks say nothing alone, and a skip only its notice when set. */
+  const isSpoken = (text: Spoken) => {
+    if (text === QUOTED || text === QUOTE_ENDED) return false
+    if (text === SKIPPED_CODE) return config.notices.code !== ""
+    if (text === SKIPPED_TABLE) return config.notices.table !== ""
+    return true
+  }
+
   /** Whether sentences of a streamed response before `step` are still to be played. */
   // Responses whose speech is dropped, the rest playing on: the current turn's, giving way to its answer read whole.
   const skippedSteps = new Set<number>()
@@ -299,9 +307,11 @@ export const register: Register = (on, options) => {
         // Speech asked for before the session starts waits for it; after it ends there is no directory to write clips to.
         if (hasStarted && directory === "") return { isQueued: false, reason: "ended" }
         const texts = toSentences(text)
-        if (texts.length === 0) return { isQueued: false, reason: "empty" }
-        if (interrupt === true) await stop()
+        if (!texts.some(isSpoken)) return { isQueued: false, reason: "empty" }
+        // Queued before the stop is awaited: a later call made meanwhile is said after this one, not before.
+        const stopped = interrupt === true ? stop() : undefined
         enqueue(texts)
+        await stopped
         return { isQueued: true }
       },
       stop: () => stop(),
