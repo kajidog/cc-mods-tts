@@ -167,8 +167,8 @@ export const register: Register = (on, options) => {
   // Notices are few and fixed: each is synthesized once per load, then replayed at once.
   const cachedNotices = new Map<string, string>()
   let directory = ""
-  // Set once session.start prepared the directory: an empty one after it means the session ended (until /clear brings one back).
-  let hasStarted = false
+  // Set as session.end begins, before its teardown is awaited; cleared once /clear, resume or /branch brings a directory back.
+  let isEnded = false
   let noticeCount = 0
   // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
   let engineIssue: string | undefined
@@ -314,8 +314,8 @@ export const register: Register = (on, options) => {
     const tts: Tts = {
       speak: async ({ text, interrupt }) => {
         if (!isEnabled) return { isQueued: false, reason: "off" }
-        // Speech asked for before the session starts waits for it; after it ends there is no directory to write clips to.
-        if (hasStarted && directory === "") return { isQueued: false, reason: "ended" }
+        // Speech asked for before the session starts waits for it; once it is ending, its directory is being removed.
+        if (isEnded) return { isQueued: false, reason: "ended" }
         const texts = toSentences(text)
         if (!texts.some(isSpoken)) return { isQueued: false, reason: "empty" }
         // Queued before the stop is awaited: a later call made meanwhile is said after this one, not before.
@@ -338,7 +338,6 @@ export const register: Register = (on, options) => {
     if (player === undefined) $.ui.toast("tts: no audio player found (ffplay, paplay, aplay, afplay, powershell.exe)")
 
     directory = await prepareDirectory($, isWindows)
-    hasStarted = true
     const inheritedFloorName = await read($, floorId)
     floorName = inheritedFloorName ?? floorName
     await update($, floorId, () => floorName)
@@ -661,6 +660,7 @@ export const register: Register = (on, options) => {
   })
 
   on("session.end", async ($, e, next) => {
+    isEnded = true
     await stop()
     await releaseFloor()
     cachedNotices.clear()
@@ -675,6 +675,7 @@ export const register: Register = (on, options) => {
   on("classic.SessionStart", { source: ["clear", "resume", "fork"] }, async ($, e, next) => {
     if (directory === "") directory = await prepareDirectory($, isWindows)
     else await update($, audioDirectory, () => directory)
+    isEnded = false
     await update($, floorId, () => floorName)
     republishState()
     return next(e)
