@@ -323,6 +323,8 @@ await $.tts.stop()
 
 `speak` は読み上げモードに関係なく読み、1回の応答の文字数の上限もかかりません。複数のセッションの間では通知と同じく最優先です。`/tts off` の間は読まずに `reason: "off"`、セッションが終わった後は `reason: "ended"` を返します。セッションが始まる前に呼んだ分は、始まってから読みます。
 
+実装例: [gh-inbox-tts](https://github.com/kajidog/cc-mods-gh-inbox/tree/main/plugins/gh-inbox-tts)（GitHub の通知を `$.tts.speak` で読み上げる Mod）
+
 ### 変更履歴とリリース
 
 変更履歴は [CHANGELOG.md](CHANGELOG.md) にまとめています。[Changesets](https://changesets.dev/) で変更メモを集め、GitHub Actions がリリース用 PR を作成・更新します。
