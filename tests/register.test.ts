@@ -42,7 +42,8 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   on("turn.start", (_, e) => ({ turnId: e.turnId }))
   on("turn.complete", (_, e) => ({ text: e.answer }))
   // A test may hold the engine check's answer and the removal of audio files, and make synthesis fail.
-  const engine = { check: Promise.resolve(), cleanup: Promise.resolve(), synthesisExit: 0 }
+  // `isStreamRefused` has a stream play nothing, as an engine without streaming does.
+  const engine = { check: Promise.resolve(), cleanup: Promise.resolve(), synthesisExit: 0, isStreamRefused: false }
   on("process.run", async (_, e) => {
     commands.push([...e.argv])
     if (e.argv[3] === "probe") await engine.check
@@ -72,6 +73,11 @@ function host(on: On, blockedInput?: string, isWindows = false) {
       }
       if (code !== 0 && kind === "play" && floor.isMarked) yield { stream: "stderr" as const, text: "tts-floor: yielded\n" }
       if (code !== 0) return { value: { code, signal: null } }
+    }
+    if (e.argv[0] === "curl" && e.argv.some(arg => arg.includes("/audio_query"))) yield { stream: "stdout" as const, text: '{"speedScale":1}' }
+    if (e.argv.includes("tts-stream") && engine.isStreamRefused) {
+      yield { stream: "stderr" as const, text: "tts-stream: refused\n" }
+      return { value: { code: 74, signal: null } }
     }
     if (blockedInput !== undefined && e.input === blockedInput) {
       onStarted()
@@ -952,4 +958,59 @@ test("replay select reads the block it names", { options }, async ($, on) => {
   await $.command.run(command("replay select 0"))
   await observed.idle()
   expect(observed.spoken()).toEqual(["調べます。"])
+})
+
+const voicevox = { engine: "voicevox", voicevoxUrl: "http://x", voicevoxSpeaker: 3, speed: 1.2, player: "ffplay" }
+const isStream = (e: ProcessSpawnRequest) => e.argv.includes("tts-stream")
+const synthesisOf = (e: ProcessSpawnRequest) => e.argv.find(arg => /\/(streaming_)?synthesis\?/.test(arg))
+
+test("with nothing playing, a sentence plays as VOICEVOX synthesizes it, and the next is synthesized to a file meanwhile", { options: voicevox }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = (kind, argv) => (kind === "play" && argv.includes("tts-stream") ? "block" : 0)
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。二文目。"))
+  await observed.idle()
+  const [stream] = observed.processes.filter(isStream)
+  expect(stream?.argv).toContain("http://x/streaming_synthesis?speaker=3&segment_length=1")
+  expect(JSON.parse(stream?.input ?? "")).toEqual({ speedScale: 1.2 })
+  expect(observed.processes.map(synthesisOf).filter(Boolean)).toEqual([
+    "http://x/streaming_synthesis?speaker=3&segment_length=1",
+    "http://x/synthesis?speaker=3",
+  ])
+  observed.floor.unblock()
+  await observed.idle()
+  await settle()
+  const plays = observed.processes.filter(e => floorKind(e.argv) === "play")
+  expect(plays.map(isStream)).toEqual([true, false])
+  expect(plays[1]?.argv).toContain("ffplay")
+})
+
+test("an engine that refuses to stream reads the sentence from a file and is not asked to stream again", { options: voicevox }, async ($, on) => {
+  const observed = host(on)
+  observed.engine.isStreamRefused = true
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  await $.command.run(command("test 二文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.processes.filter(isStream).length).toBe(1)
+  expect(observed.processes.map(synthesisOf).filter(Boolean)).toEqual([
+    "http://x/streaming_synthesis?speaker=3&segment_length=1",
+    "http://x/synthesis?speaker=3",
+    "http://x/synthesis?speaker=3",
+  ])
+  const plays = observed.processes.filter(e => floorKind(e.argv) === "play")
+  expect(plays.map(isStream)).toEqual([true, false, false])
+})
+
+test("without ffplay, VOICEVOX reads from files", { options: { ...voicevox, player: "aplay" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.processes.filter(isStream)).toEqual([])
+  expect(observed.processes.map(synthesisOf).filter(Boolean)).toEqual(["http://x/synthesis?speaker=3"])
 })

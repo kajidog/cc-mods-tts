@@ -210,6 +210,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 
 - **停止:** 合成のリクエストも中断します。ただし TTS サーバーが切断後も計算を続ける場合は、終わるまで次の合成が待たされることがあります。
 - **語尾の途切れ:** `ffplay` / `powershell` では、無音を除いた WAV の後ろに0.2秒の無音を足します。`ffmpeg` が必要で、ない場合は元の音声をそのまま再生します。
+- **ストリーミング再生:** VOICEVOX 0.26 以降では、何も再生していないときの文を、合成しながら再生します（長い文ほど早く喋り始めます）。続く文はその間にファイルへ合成します。`ffplay` と `ffmpeg` がある Linux・macOS・WSL で使い、設定はいりません。ストリーミングに対応していないエンジン（0.25 以前など）では一度だけ試して、以降はファイルで合成します。ストリーミングでは文末の長い無音は削りません。
 - **WSL のノイズ:** `ffplay` は WSLg を経由するため、「ジリジリ」とノイズが混じることがあります。`/config` の `TTS: Player` を `powershell` にすると改善します（文と文の間は少し空きます）。
 
 </details>
@@ -290,7 +291,7 @@ API は early access のため、Claude Code の更新で変わることがあ�
 
 エンジンは `hooks/engines/` に1ファイルずつある（`irodori.ts` / `voicevox.ts` / `command.ts`）。追加するには:
 
-1. `hooks/engines/<name>.ts` に `Engine`（`engine.ts` の型）を書く。`load(options, isWindows)` で自分の設定を読み、`synthesis(text, out)` で wav を `out` に書くコマンド列を返す。声の一覧があれば `voices` も
+1. `hooks/engines/<name>.ts` に `Engine`（`engine.ts` の型）を書く。`load(options, isWindows)` で自分の設定を読み、`synthesis(text, out)` で wav を `out` に書くコマンド列を返す。声の一覧があれば `voices` も。合成しながら WAV を標準出力に書けるなら `stream(text)` も（WAV 以外を返すと、その文は `synthesis` で読み直す）
 2. `hooks/engines/index.ts` の `ENGINES` に足す
 3. `.claude-plugin/plugin.json` の `userConfig.engine.options` に名前を足し、そのエンジンの設定項目を追加する
 

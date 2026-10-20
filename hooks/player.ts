@@ -37,6 +37,57 @@ export function prepareAudioCommand(file: string, player: string | undefined, is
   ]
 }
 
+/** streamPlayCommand played nothing: the source wrote no WAV (an engine without streaming, one that is down), or ffmpeg is missing. */
+export const STREAM_REFUSED = 74
+/** What streamPlayCommand writes to stderr beside STREAM_REFUSED: a player that exits 74 itself is not taken for a refusal. */
+const STREAM_MARK = "tts-stream:"
+
+/** Whether streamPlayCommand works with this player: ffplay reads a pipe, and only a Unix shell runs the script. */
+export function canStream(player: string, isWindows: boolean): boolean {
+  return player === "ffplay" && !isWindows
+}
+
+/** Whether a stream exited having played nothing, so the clip is to be synthesized to a file instead. */
+export function isStreamRefused(code: number | null, stderr: string): boolean {
+  return code === STREAM_REFUSED && stderr.includes(STREAM_MARK)
+}
+
+/**
+ * Plays the WAV that `source` writes to stdout as it comes, through ffmpeg (the leading pause cut,
+ * the volume, the padding prepareAudioCommand gives a file) into ffplay. Its stdin goes to `source`.
+ * The processes talk through FIFOs beside `file` rather than a pipeline, so a stop can kill each one.
+ * Exits STREAM_REFUSED when `source` writes anything but a WAV, before anything is played.
+ */
+export function streamPlayCommand(file: string, volume: number, source: string[]): string[] {
+  const filter = `silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05,volume=${volume},apad=pad_dur=${TAIL_PADDING_SECONDS}`
+  const fifos = '"$f.in" "$f.mid" "$f.out"'
+  const refuse = `echo "${STREAM_MARK} refused" >&2; exit ${STREAM_REFUSED}`
+  const noBuffer = "-probesize 32 -analyzeduration 0"
+  return ["sh", "-c", [
+    "f=$1; shift",
+    `command -v ffmpeg >/dev/null && rm -f ${fifos} "$f.no" && mkfifo ${fifos} || { ${refuse}; }`,
+    "s= g= t= p=",
+    // ffmpeg stopped gently writes its trailer to a FIFO no one reads, and never exits.
+    `trap 'kill -9 $t 2>/dev/null; kill $s $g $p 2>/dev/null; rm -f ${fifos} "$f.no"; exit 143' TERM INT HUP`,
+    // An asynchronous command reads /dev/null unless its stdin is redirected.
+    "exec 3<&0",
+    `"$@" <&3 >"$f.in" & s=$!`,
+    // Passes the source on once it opens as a WAV; anything else (an error body, nothing) is a refusal.
+    `{ [ "$(dd bs=1 count=4 2>/dev/null)" = RIFF ] || { : >"$f.no"; exit; }; printf RIFF; exec cat; } <"$f.in" >"$f.mid" & g=$!`,
+    `ffmpeg -loglevel error -y ${noBuffer} -f wav -i "$f.mid" -af "${filter}" -f wav "$f.out" & t=$!`,
+    `ffplay -nodisp -autoexit -loglevel error ${noBuffer} -fflags nobuffer -f wav "$f.out" & p=$!`,
+    "wait $s; sc=$?",
+    // ffmpeg that failed may never have opened its output, leaving ffplay waiting for a writer.
+    "wait $t || kill $p 2>/dev/null",
+    "wait $p; pc=$?",
+    "wait $g",
+    `[ -e "$f.no" ] && { rm -f ${fifos} "$f.no"; ${refuse}; }`,
+    `rm -f ${fifos}`,
+    "[ $sc -ne 0 ] && exit $sc",
+    "exit $pc",
+  ].join("\n"), "tts-stream", file, ...source]
+}
+
 /**
  * PowerShell that plays the wav at `path` (a PowerShell expression) to its end. The file goes in
  * as a stream: SoundPlayer given a \\wsl.localhost path with capitals plays nothing, without error.
