@@ -49,16 +49,27 @@ export function canStream(player: string, isWindows: boolean): boolean {
 
 /** Whether a stream exited having played nothing, so the clip is to be synthesized to a file instead. */
 export function isStreamRefused(code: number | null, stderr: string): boolean {
-  return code === STREAM_REFUSED && stderr.includes(STREAM_MARK)
+  return code === STREAM_REFUSED && stderr.includes(`${STREAM_MARK} refused`)
+}
+
+/** Whether the source of a stream that had begun to play failed (or stalled past the limit), cutting the speech short. */
+export function isStreamFailed(code: number | null, stderr: string): boolean {
+  return code !== 0 && stderr.includes(`${STREAM_MARK} failed`)
+}
+
+/** Whether the source of a stream that began to play has ended, the engine done with it, though the speech may still be playing. */
+export function isStreamSynthesized(stderr: string): boolean {
+  return stderr.includes(`${STREAM_MARK} synthesized`)
 }
 
 /**
  * Plays the WAV that `source` writes to stdout as it comes, through ffmpeg (the leading pause cut,
  * the volume, the padding prepareAudioCommand gives a file) into ffplay. Its stdin goes to `source`.
  * The processes talk through FIFOs beside `file` rather than a pipeline, so a stop can kill each one.
- * Exits STREAM_REFUSED when `source` writes anything but a WAV, before anything is played.
+ * Exits STREAM_REFUSED when `source` writes anything but a WAV, before anything is played; a source
+ * still running after `limitSeconds` is stopped, as synthesis to a file is.
  */
-export function streamPlayCommand(file: string, volume: number, source: string[]): string[] {
+export function streamPlayCommand(file: string, volume: number, source: string[], limitSeconds: number): string[] {
   const filter = `silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05,volume=${volume},apad=pad_dur=${TAIL_PADDING_SECONDS}`
   const fifos = '"$f.in" "$f.mid" "$f.out"'
   const refuse = `echo "${STREAM_MARK} refused" >&2; exit ${STREAM_REFUSED}`
@@ -66,24 +77,27 @@ export function streamPlayCommand(file: string, volume: number, source: string[]
   return ["sh", "-c", [
     "f=$1; shift",
     `command -v ffmpeg >/dev/null && rm -f ${fifos} "$f.no" && mkfifo ${fifos} || { ${refuse}; }`,
-    "s= g= t= p=",
+    "s= g= t= p= w=",
     // ffmpeg stopped gently writes its trailer to a FIFO no one reads, and never exits.
-    `trap 'kill -9 $t 2>/dev/null; kill $s $g $p 2>/dev/null; rm -f ${fifos} "$f.no"; exit 143' TERM INT HUP`,
+    `trap 'kill -9 $t 2>/dev/null; kill $s $g $p $w 2>/dev/null; rm -f ${fifos} "$f.no"; exit 143' TERM INT HUP`,
     // An asynchronous command reads /dev/null unless its stdin is redirected.
     "exec 3<&0",
     `"$@" <&3 >"$f.in" & s=$!`,
+    // Its sleep is killed with it, rather than left to run out.
+    `{ sleep ${limitSeconds} & z=$!; trap 'kill $z; exit' TERM; wait $z && kill $s; } 2>/dev/null & w=$!`,
     // Passes the source on once it opens as a WAV; anything else (an error body, nothing) is a refusal.
-    `{ [ "$(dd bs=1 count=4 2>/dev/null)" = RIFF ] || { : >"$f.no"; exit; }; printf RIFF; exec cat; } <"$f.in" >"$f.mid" & g=$!`,
+    `{ [ "$(dd bs=1 count=4 2>/dev/null)" = RIFF ] || { : >"$f.no"; exit; }; printf RIFF; cat && echo "${STREAM_MARK} synthesized" >&2; } <"$f.in" >"$f.mid" & g=$!`,
     `ffmpeg -loglevel error -y ${noBuffer} -f wav -i "$f.mid" -af "${filter}" -f wav "$f.out" & t=$!`,
     `ffplay -nodisp -autoexit -loglevel error ${noBuffer} -fflags nobuffer -f wav "$f.out" & p=$!`,
     "wait $s; sc=$?",
+    "kill $w 2>/dev/null",
     // ffmpeg that failed may never have opened its output, leaving ffplay waiting for a writer.
     "wait $t || kill $p 2>/dev/null",
     "wait $p; pc=$?",
     "wait $g",
     `[ -e "$f.no" ] && { rm -f ${fifos} "$f.no"; ${refuse}; }`,
     `rm -f ${fifos}`,
-    "[ $sc -ne 0 ] && exit $sc",
+    `[ $sc -ne 0 ] && { echo "${STREAM_MARK} failed $sc" >&2; exit $sc; }`,
     "exit $pc",
   ].join("\n"), "tts-stream", file, ...source]
 }
