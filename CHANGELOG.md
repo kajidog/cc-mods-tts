@@ -1,5 +1,11 @@
 # cc-mods-tts
 
+## 0.11.0
+
+### Minor Changes
+
+- 9367bfd: VOICEVOX 0.26 以降では、何も再生していないときの文を、合成しながら再生するようにしました。長い文ほど早く喋り始めます。`ffplay` と `ffmpeg` がある Linux・macOS・WSL で働き、ストリーミングに対応していないエンジンでは今まで通りファイルで合成します。
+
 ## 0.10.0
 
 ### Minor Changes
