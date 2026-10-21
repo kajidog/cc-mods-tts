@@ -65,6 +65,8 @@ test("streams into ffplay through ffmpeg, which cuts the leading pause, scales a
   expect(script).toContain("= RIFF ]")
   expect(script).toContain("trap ")
   expect(script).toContain("sleep 300")
+  // ffmpeg that fails with the source still running frees the FIFOs and refuses.
+  expect(script).toContain("[ $tc -ne 0 ] && kill $s $g $p")
 })
 
 test("only ffplay on Unix streams, and only a marked 74 is a refusal", async () => {

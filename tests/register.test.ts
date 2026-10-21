@@ -56,6 +56,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     check: Promise.resolve(),
     cleanup: Promise.resolve(),
     synthesisExit: 0,
+    queryExit: 0,
     isStreamRefused: false,
     streamExit: 0,
     streamStderr: "",
@@ -92,7 +93,10 @@ function host(on: On, blockedInput?: string, isWindows = false) {
       if (code !== 0 && kind === "play" && floor.isMarked) yield { stream: "stderr" as const, text: "tts-floor: yielded\n" }
       if (code !== 0) return { value: { code, signal: null } }
     }
-    if (e.argv[0] === "curl" && e.argv.some(arg => arg.includes("/audio_query"))) yield { stream: "stdout" as const, text: '{"speedScale":1}' }
+    if (e.argv[0] === "curl" && e.argv.some(arg => arg.includes("/audio_query"))) {
+      if (engine.queryExit !== 0) return { value: { code: engine.queryExit, signal: null } }
+      yield { stream: "stdout" as const, text: '{"speedScale":1}' }
+    }
     if (e.argv.includes("tts-stream") && engine.isStreamRefused) {
       yield { stream: "stderr" as const, text: "tts-stream: refused\n" }
       return { value: { code: 74, signal: null } }
@@ -1096,4 +1100,29 @@ test("without ffplay, VOICEVOX reads from files", { options: { ...voicevox, play
   await settle()
   expect(observed.processes.filter(isStream)).toEqual([])
   expect(observed.processes.map(synthesisOf).filter(Boolean)).toEqual(["http://x/synthesis?speaker=3"])
+})
+
+test("an engine that fails before it streams falls back at once, not after failing again", {
+  options: { ...voicevox, fallback: "command", command: "synth {out}" },
+}, async ($, on) => {
+  const observed = host(on)
+  observed.engine.queryExit = 7
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.processes.filter(e => e.argv.some(arg => arg.includes("/audio_query")))).toHaveLength(1)
+  expect(observed.spoken()).toEqual(["一文目。"])
+  expect(observed.statuses.at(-1)).toBe("voicevox down")
+})
+
+test("a clip read from a file after a refusal leaves no trimmed copy behind", { options: voicevox }, async ($, on) => {
+  const observed = host(on)
+  observed.engine.isStreamRefused = true
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  const removals = observed.commands.filter(argv => argv[0] === "rm").flat()
+  expect(removals.some(arg => arg.endsWith("000000.wav.t.wav"))).toBe(true)
 })

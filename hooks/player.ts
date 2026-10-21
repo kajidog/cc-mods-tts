@@ -66,7 +66,8 @@ export function isStreamSynthesized(stderr: string): boolean {
  * Plays the WAV that `source` writes to stdout as it comes, through ffmpeg (the leading pause cut,
  * the volume, the padding prepareAudioCommand gives a file) into ffplay. Its stdin goes to `source`.
  * The processes talk through FIFOs beside `file` rather than a pipeline, so a stop can kill each one.
- * Exits STREAM_REFUSED when `source` writes anything but a WAV, before anything is played; a source
+ * Exits STREAM_REFUSED when `source` writes anything but a WAV, before anything is played, or ffmpeg fails
+ * while it runs; a source
  * still running after `limitSeconds` is stopped, as synthesis to a file is.
  */
 export function streamPlayCommand(file: string, volume: number, source: string[], limitSeconds: number): string[] {
@@ -89,10 +90,13 @@ export function streamPlayCommand(file: string, volume: number, source: string[]
     `{ [ "$(dd bs=1 count=4 2>/dev/null)" = RIFF ] || { : >"$f.no"; exit; }; printf RIFF; cat && echo "${STREAM_MARK} synthesized" >&2; } <"$f.in" >"$f.mid" & g=$!`,
     `ffmpeg -loglevel error -y ${noBuffer} -f wav -i "$f.mid" -af "${filter}" -f wav "$f.out" & t=$!`,
     `ffplay -nodisp -autoexit -loglevel error ${noBuffer} -fflags nobuffer -f wav "$f.out" & p=$!`,
+    // ffmpeg that failed may never have opened its input or output, leaving the rest waiting on a FIFO.
+    "wait $t; tc=$?",
+    "[ $tc -ne 0 ] && kill $s $g $p 2>/dev/null",
     "wait $s; sc=$?",
     "kill $w 2>/dev/null",
-    // ffmpeg that failed may never have opened its output, leaving ffplay waiting for a writer.
-    "wait $t || kill $p 2>/dev/null",
+    // Failed with the source still running, ffmpeg cannot play this (an option its version lacks): a refusal.
+    `[ $tc -ne 0 ] && [ $sc -eq 143 ] && : >"$f.no"`,
     "wait $p; pc=$?",
     "wait $g",
     `[ -e "$f.no" ] && { rm -f ${fifos} "$f.no"; ${refuse}; }`,
