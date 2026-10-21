@@ -33,6 +33,12 @@ export type LoadedEngine = {
    * curl. Throws when a setting it needs is unset.
    */
   synthesis: (text: string, out: string) => Step[]
+  /**
+   * The commands whose last writes `text`, spoken, to stdout as WAV while it is synthesized, so it
+   * plays as it comes; absent for an engine that cannot. Where the engine answers anything but a
+   * WAV (an older version without the endpoint), the mod reads with `synthesis` instead.
+   */
+  stream?: (text: string) => Step[]
   /** What `/tts voice` lists and sets; absent for an engine without voices. */
   voices?: {
     url: string

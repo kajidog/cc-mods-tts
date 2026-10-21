@@ -12,7 +12,8 @@ export class SpeechProcess {
     await this.stream?.return({ code: null, signal: "SIGTERM" }).catch(() => undefined)
   }
 
-  async read(stream: HookStream<ProcessSpawnChunk, ProcessSpawnResult>) {
+  /** `onStderr` is given the stderr read so far each time more comes. */
+  async read(stream: HookStream<ProcessSpawnChunk, ProcessSpawnResult>, onStderr?: (stderr: string) => void) {
     this.stream = stream
     // Closing a stream rejects its result; observe that rejection even during cancellation.
     const result = stream.result.catch(() => ({ code: null, signal: "SIGTERM" }))
@@ -22,7 +23,10 @@ export class SpeechProcess {
       for await (const piece of stream) {
         // Bound output so a noisy command cannot fill memory.
         if (piece.stream === "stdout") stdout = (stdout + piece.text).slice(0, 4_194_304)
-        else stderr = (stderr + piece.text).slice(0, 4_194_304)
+        else {
+          stderr = (stderr + piece.text).slice(0, 4_194_304)
+          onStderr?.(stderr)
+        }
       }
       return { ...(await result), stdout, stderr }
     } finally {

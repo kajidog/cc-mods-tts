@@ -25,6 +25,17 @@ describe("engines", () => {
     expect(engine.voices?.select("8")).toEqual({ key: "tts.voicevoxSpeaker", value: 8 })
   })
 
+  test("voicevox streams the same query with the speed, writing the WAV to stdout", async () => {
+    const engine = ENGINES.voicevox.load(options({ voicevoxUrl: "http://x/", voicevoxSpeaker: 3, speed: 1.2 }))
+    const [query, stream] = engine.stream?.("あ") ?? []
+    expect(query?.argv).toContain("http://x/audio_query?speaker=3&text=%E3%81%82")
+    expect(stream?.argv).toContain("http://x/streaming_synthesis?speaker=3&segment_length=1")
+    expect(stream?.argv.slice(-2)).toEqual(["-o", "-"])
+    const stdin = stream?.stdin as (previous: string) => string
+    expect(JSON.parse(stdin('{"speedScale":1}'))).toEqual({ speedScale: 1.2 })
+    expect(ENGINES.irodori.load(options({ irodoriUrl: "http://x" })).stream).toBeUndefined()
+  })
+
   test("each engine says how to check that it answers", async () => {
     expect(ENGINES.irodori.load(options({ irodoriUrl: "http://x/" })).probe).toContain("http://x/health")
     expect(ENGINES.voicevox.load(options({ voicevoxUrl: "http://x" })).probe).toContain("http://x/version")

@@ -19,11 +19,20 @@ import {
   releaseCommand,
   STREAM_PRIORITY,
 } from "./floor"
-import { type EngineName, ENGINES, type LoadedEngine } from "./engines"
+import { type EngineName, ENGINES, type LoadedEngine, type Step } from "./engines"
 import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { lastAnswer, replayBlocks, replayOptions } from "./replay"
 import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from "./platform"
-import { findPlayerCommand, playCommand, prepareAudioCommand } from "./player"
+import {
+  canStream,
+  findPlayerCommand,
+  isStreamFailed,
+  isStreamRefused,
+  isStreamSynthesized,
+  playCommand,
+  prepareAudioCommand,
+  streamPlayCommand,
+} from "./player"
 import { SpeechProcess } from "./process"
 import { type Change, MODE_LABELS, MODES, optionLine, planChange, SPEEDS, VOLUMES } from "./settings"
 import { SUMMARY_PROMPT, SummaryFilter, summaryOf } from "./summary"
@@ -62,6 +71,8 @@ const engineState = atom({ plugin: "tts", key: "engine" } as const, { name: "", 
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
+/** Refusals in a row, each followed by a file the engine read, after which an engine is not asked to stream again. */
+const STREAM_REFUSALS = 2
 /** How often a session holding the floor while it synthesizes says it is still there. */
 const FLOOR_HEARTBEAT_MS = 10_000
 /** How often a session holding the floor between clips looks for a session waiting with something more urgent. */
@@ -88,7 +99,16 @@ const NOTICE: Origin = { priority: NOTICE_PRIORITY }
 
 /** `cacheAs` keeps the synthesized clip at that path for the next time; `seq` numbers speech in the order queued. */
 type Sentence = Origin & { text: string; generation: number; seq: number; cacheAs?: string }
-type Clip = Origin & { text: string; file: string; generation: number; seq: number; isCached?: boolean }
+/**
+ * `source` writes the clip's speech to stdout, played as it comes; should the engine refuse to
+ * stream, the clip is synthesized to `file` instead.
+ */
+type Clip = Origin & { text: string; file: string; generation: number; seq: number; isCached?: boolean; source?: Source }
+/**
+ * `engine` is the one asked: a refusal is its, whatever is in use by then. `finish` frees the engine
+ * for the next sentence once the stream is synthesized, or the clip is done with.
+ */
+type Source = { argv: string[]; stdin?: string; engine: LoadedEngine; finish: () => void }
 
 export const register: Register = (on, options) => {
   let isWindows = false
@@ -164,6 +184,12 @@ export const register: Register = (on, options) => {
   // The sentence being synthesized: the next clip to play, whose priority a holder between clips yields by.
   let synthesizing: Sentence | undefined
   const clips = new Channel<Clip>()
+  // Clips queued and not yet played or dropped: a sentence streams only when none of them is live.
+  const ahead = new Set<Clip>()
+  const queueClip = (clip: Clip) => {
+    ahead.add(clip)
+    clips.push(clip)
+  }
   // Notices are few and fixed: each is synthesized once per load, then replayed at once.
   const cachedNotices = new Map<string, string>()
   let directory = ""
@@ -176,6 +202,11 @@ export const register: Register = (on, options) => {
   let replayChoices: string[] = []
   // Set by session.start: probes the engine in use and shows the result.
   let recheckEngine = () => {}
+  // The engine that answered streams with no WAV and files with one: it is not asked to stream again.
+  // Loaded anew by a switch or a pin, an engine is asked again.
+  let refusedStream: LoadedEngine | undefined
+  // Refusals since the engine last streamed: one alone may be an error of the moment.
+  let streamRefusals = { engine: undefined as LoadedEngine | undefined, count: 0 }
 
   /** Rebuilds the engines from the options with this directory's pin laid over them. */
   const applyPins = (stored: Pins) => {
@@ -210,7 +241,7 @@ export const register: Register = (on, options) => {
   const queueNotice = (text: string) => {
     if (text === "") return
     const cached = cachedNotices.get(text)
-    if (cached !== undefined) return clips.push({ ...NOTICE, text, file: cached, generation, seq: track(NOTICE), isCached: true })
+    if (cached !== undefined) return queueClip({ ...NOTICE, text, file: cached, generation, seq: track(NOTICE), isCached: true })
     sentences.push({ ...NOTICE, text, generation, seq: track(NOTICE), cacheAs: `${directory}/notice-${noticeCount++}.wav` })
   }
 
@@ -404,10 +435,55 @@ export const register: Register = (on, options) => {
       lastErrorAt = Date.now()
     }
 
-    // Synthesis runs ahead of playback, one request at a time.
+    /**
+     * Synthesizes `speech` to `file`, with the fallback should the engine in use fail; true when the fallback read it.
+     * `failed` is the engine's failure already met for this speech: the fallback reads at once, not after another.
+     */
+    const render = async (speech: Origin & { text: string; generation: number }, file: string, process: SpeechProcess, failed?: { error: unknown }) => {
+      const isCurrent = () => isLive(speech)
+      // A result of the engine before a switch says nothing of the one in use now.
+      const used = engine
+      try {
+        if (failed !== undefined) throw failed.error
+        await synthesize($, process, engine, speech.text, file, isCurrent)
+        if (isCurrent() && used === engine) noteEngine()
+        return false
+      } catch (error) {
+        if (isCurrent() && used === engine) noteEngine(error)
+        if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
+        await synthesize($, process, fallback, speech.text, file, isCurrent)
+        reportFallback(error)
+        return true
+      }
+    }
+
+    /**
+     * What plays `sentence` as the engine synthesizes it, once what comes before (VOICEVOX's audio query)
+     * has run; undefined where the engine or the player cannot stream: a file is tried then. Throws what the
+     * engine in use failed with, which a file would fail with too.
+     */
+    const prepareStream = async (sentence: Sentence): Promise<Omit<Source, "finish"> | undefined> => {
+      const used = engine
+      if (used.stream === undefined || used === refusedStream || player === undefined || !canStream(player, isWindows)) return undefined
+      try {
+        const steps = used.stream(sentence.text)
+        const last = steps.at(-1)
+        if (last === undefined) return undefined
+        const stdout = await runSteps($, synthesisProcess, steps.slice(0, -1), () => isLive(sentence))
+        return { argv: last.argv, stdin: typeof last.stdin === "function" ? last.stdin(stdout) : last.stdin, engine: used }
+      } catch (error) {
+        // An engine switched from meanwhile is not the one a file is asked of.
+        if (used !== engine) return undefined
+        throw error
+      }
+    }
+
+    // Synthesis runs ahead of playback, one request at a time: a stream handed to playback is one until synthesized.
+    let streamed = Promise.resolve()
     void (async () => {
       for (;;) {
         const sentence = await sentences.take()
+        await streamed
         if (!isLive(sentence)) {
           settle(sentence)
           continue
@@ -418,21 +494,29 @@ export const register: Register = (on, options) => {
         if (playing === undefined || !isLive(playing)) publishSpeech({ state: "preparing", text: null })
         const file = sentence.cacheAs ?? `${directory}/${String(clipCount++).padStart(6, "0")}.wav`
         const isCurrent = () => isLive(sentence)
-        // A result of the engine before a switch says nothing of the one in use now.
-        const used = engine
-        let isFallback = false
+        const { generation: clipGeneration, step, priority, seq } = sentence
         let isHandedOff = false
         try {
-          try {
-            await synthesize($, synthesisProcess, engine, sentence.text, file, isCurrent)
-            if (isCurrent() && used === engine) noteEngine()
-          } catch (error) {
-            if (isCurrent() && used === engine) noteEngine(error)
-            if (!isCurrent() || fallback === undefined || config.fallback === undefined) throw error
-            isFallback = true
-            await synthesize($, synthesisProcess, fallback, sentence.text, file, isCurrent)
-            reportFallback(error)
+          // With nothing before it to play, a sentence plays as it is synthesized; after others, it is synthesized
+          // while they play. A notice is kept as a file to say again.
+          const isFirst = ![...ahead].some(isLive)
+          let source: Omit<Source, "finish"> | undefined
+          let failed: { error: unknown } | undefined
+          if (isFirst && sentence.cacheAs === undefined) source = await prepareStream(sentence).catch((error: unknown) => {
+            failed = { error }
+            return undefined
+          })
+          if (!isCurrent()) continue
+          if (source !== undefined) {
+            let finish = () => {}
+            streamed = new Promise(resolve => {
+              finish = resolve
+            })
+            queueClip({ text: sentence.text, file, generation: clipGeneration, step, priority, seq, source: { ...source, finish } })
+            isHandedOff = true
+            continue
           }
+          const isFallback = await render(sentence, file, synthesisProcess, failed)
           if (!isCurrent()) {
             await $.process.run(removeFilesCommand([file], isWindows))
             continue
@@ -446,8 +530,7 @@ export const register: Register = (on, options) => {
           // A notice the fallback read is kept for this time only: the engine may be back next time.
           const isCached = sentence.cacheAs !== undefined && !isFallback
           if (isCached) cachedNotices.set(sentence.text, file)
-          const { generation: clipGeneration, step, priority, seq } = sentence
-          clips.push({ text: sentence.text, file, generation: clipGeneration, step, priority, seq, isCached })
+          queueClip({ text: sentence.text, file, generation: clipGeneration, step, priority, seq, isCached })
           isHandedOff = true
         } catch (error) {
           await $.process.run(removeFilesCommand([file], isWindows))
@@ -538,20 +621,69 @@ export const register: Register = (on, options) => {
       }
     }
 
+    /**
+     * Synthesizes to its file a clip queued to stream, holding the floor meanwhile; true when the fallback read it.
+     * Undefined when a stop left it unread.
+     */
+    const readFile = async (clip: Clip, source: Source, player: string) => {
+      const isFallback = await keepFloor(render(clip, clip.file, playbackProcess))
+      // The engine is done with the clip: the next sentence is synthesized while it plays.
+      source.finish()
+      if (!isLive(clip)) return undefined
+      await runProcess($, playbackProcess, prepareAudioCommand(clip.file, player, isWindows), undefined, 30_000).catch(() => undefined)
+      return isFallback
+    }
+
+    /** Reads from its file a clip whose engine refused to stream. An engine that refuses again and reads that too is not asked to stream again. */
+    const readInstead = async (clip: Clip, source: Source, player: string) => {
+      // A stop leaves the file unread: that says nothing of the engine.
+      const isFallback = await readFile(clip, source, player)
+      if (isFallback !== false || source.engine !== engine) return
+      const count = streamRefusals.engine === engine ? streamRefusals.count + 1 : 1
+      streamRefusals = { engine, count }
+      if (count >= STREAM_REFUSALS) refusedStream = engine
+    }
+
+    /** Notes what a stream that played says of its engine: a source that failed partway is an error, as a failed synthesis is. */
+    const noteStream = (clip: Clip, source: Source, played: { code: number | null; stderr: string }) => {
+      if (!isLive(clip)) return
+      const isEngineInUse = source.engine === engine
+      if (played.code === 0) {
+        if (!isEngineInUse) return
+        streamRefusals = { engine, count: 0 }
+        return noteEngine()
+      }
+      if (!isStreamFailed(played.code, played.stderr)) return
+      const error = new Error(`${config.engine} stream failed partway (exit ${played.code})`)
+      if (isEngineInUse) noteEngine(error)
+      reportError(error)
+    }
+
     /** Plays `clip` on the floor; drops it instead when it is stream text that waited past the limit. */
     const playClip = async (clip: Clip, player: string) => {
-      const play = playCommand(player, clip.file, config.volume, isWindows)
+      // Cleared once the engine refuses to stream: the clip is read from its file then.
+      let source = clip.source
       // When a limited wait gives up: kept across waits again after a handover, so the limit is one in all.
       let deadline: number | undefined
       for (;;) {
         if (!isLive(clip)) return
+        // The player was changed since the clip was queued to stream, to one that cannot.
+        if (source !== undefined && !canStream(player, isWindows)) {
+          await readFile(clip, source, player)
+          source = undefined
+          continue
+        }
+        const play = source === undefined
+          ? playCommand(player, clip.file, config.volume, isWindows)
+          : streamPlayCommand(clip.file, config.volume, source.argv, SYNTH_TIMEOUT_MS / 1000)
+        const input = source?.stdin
+        const finish = source?.finish
+        const onStderr = finish === undefined ? undefined : (stderr: string) => isStreamSynthesized(stderr) && finish()
         const priority = priorityOf(clip)
         if (isBeforeTool(clip) && clip.seq <= quietThrough) return
-        if (isFloorBroken || !config.sharePlayback) {
-          publishSpeech({ state: "playing", text: clip.text })
-          return void (await playbackProcess.read($.process.spawn({ argv: play })))
-        }
-        if (!isHoldingFloor) {
+        // Played alone where the floor is not used: no wait, no guard.
+        const isAlone = isFloorBroken || !config.sharePlayback
+        if (!isAlone && !isHoldingFloor) {
           // Only text before a tool call waits within a limit: a notice or an answer is never dropped.
           const now = await $.clock.now()
           if (waitLimitOf(clip) === 0) deadline = undefined
@@ -588,15 +720,19 @@ export const register: Register = (on, options) => {
             continue
           }
         }
-        heldPriority = priority
+        if (!isAlone) heldPriority = priority
         publishSpeech({ state: "playing", text: clip.text })
-        const played = await keepFloor(playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, play) })))
+        const argv = isAlone ? play : guardedPlayCommand(isWindows, floorName, priority, play)
+        const played = await keepFloor(playbackProcess.read($.process.spawn({ argv, input }), onStderr))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
-        if (floorOutcome(played.code, played.stderr) !== undefined) {
+        if (!isAlone && floorOutcome(played.code, played.stderr) !== undefined) {
           isHoldingFloor = false
           continue
         }
-        return
+        if (source === undefined) return
+        if (!isStreamRefused(played.code, played.stderr)) return noteStream(clip, source, played)
+        await readInstead(clip, source, player)
+        source = undefined
       }
     }
 
@@ -614,6 +750,8 @@ export const register: Register = (on, options) => {
             playing = undefined
           }
         }
+        ahead.delete(clip)
+        clip.source?.finish()
         // Published before the files are removed, which can take seconds (PowerShell on Windows).
         // Counted by speech, not by response: one response's sentences share a key.
         // A clip given way to (not one a stop dropped) leaves the answer that replaces it being synthesized.
@@ -621,7 +759,8 @@ export const register: Register = (on, options) => {
           const isMore = [...unplayed.values()].reduce((sum, count) => sum + count, 0) > 1
           publishSpeech(isMore ? { state: "preparing", text: null } : { state: "idle", text: null })
         }
-        const files = [`${clip.file}.v.wav`]
+        // A clip read from its file after all may have been stopped while trimmed.
+        const files = [`${clip.file}.v.wav`, ...(clip.source === undefined ? [] : [`${clip.file}.t.wav`])]
         if (clip.isCached !== true) files.push(clip.file)
         await $.process.run(removeFilesCommand(files, isWindows))
         settle(clip)
@@ -1012,9 +1151,14 @@ async function synthesize(
   file: string,
   isCurrent: () => boolean,
 ) {
+  await runSteps($, process, engine.synthesis(text, file), isCurrent)
+}
+
+/** Runs commands in turn, each fed the one before's stdout as it asks; gives the last stdout, and throws on the first that fails. */
+async function runSteps($: EngineInterface, process: SpeechProcess, steps: Step[], isCurrent: () => boolean): Promise<string> {
   let stdout = ""
-  for (const step of engine.synthesis(text, file)) {
-    if (!isCurrent()) return
+  for (const step of steps) {
+    if (!isCurrent()) return stdout
     const stdin = typeof step.stdin === "function" ? step.stdin(stdout) : step.stdin
     const ran = await runProcess($, process, step.argv, stdin, SYNTH_TIMEOUT_MS)
     if (ran.code !== 0) {
@@ -1022,6 +1166,7 @@ async function synthesize(
     }
     stdout = ran.stdout
   }
+  return stdout
 }
 
 /** A cancellable command with the same time limit synthesis had under process.run. */

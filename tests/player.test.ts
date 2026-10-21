@@ -1,6 +1,15 @@
 import { expect, test } from "claude-code/testing"
 
-import { findPlayerCommand, playCommand, prepareAudioCommand } from "../hooks/player"
+import {
+  canStream,
+  findPlayerCommand,
+  isStreamFailed,
+  isStreamRefused,
+  isStreamSynthesized,
+  playCommand,
+  prepareAudioCommand,
+  streamPlayCommand,
+} from "../hooks/player"
 
 const script = (player: string, volume: number) => playCommand(player, "/tmp/a.wav", volume)[2] ?? ""
 
@@ -47,4 +56,27 @@ test("trims the silence around speech in place, keeping a short pause", async ()
   expect(file).toBe("/tmp/a.wav")
   expect(script).toContain("start_silence=0.05,areverse")
   expect(script).toContain('mv -f "$1.t.wav" "$1"')
+})
+
+test("streams into ffplay through ffmpeg, which cuts the leading pause, scales and pads", async () => {
+  const [shell, , script, name, file, ...source] = streamPlayCommand("/tmp/a.wav", 0.5, ["curl", "http://x"], 300)
+  expect([shell, name, file, source]).toEqual(["sh", "tts-stream", "/tmp/a.wav", ["curl", "http://x"]])
+  expect(script).toContain("start_silence=0.05,volume=0.5,apad=pad_dur=0.2")
+  expect(script).toContain("= RIFF ]")
+  expect(script).toContain("trap ")
+  expect(script).toContain("sleep 300")
+  // ffmpeg that fails with the source still running frees the FIFOs and refuses.
+  expect(script).toContain("[ $tc -ne 0 ] && kill $s $g $p")
+})
+
+test("only ffplay on Unix streams, and only a marked 74 is a refusal", async () => {
+  expect(canStream("ffplay", false)).toBe(true)
+  expect(canStream("ffplay", true)).toBe(false)
+  expect(canStream("aplay", false)).toBe(false)
+  expect(isStreamRefused(74, "tts-stream: refused\n")).toBe(true)
+  expect(isStreamRefused(74, "")).toBe(false)
+  expect(isStreamRefused(1, "tts-stream: refused\n")).toBe(false)
+  expect(isStreamFailed(56, "tts-stream: synthesized\ntts-stream: failed 56\n")).toBe(true)
+  expect(isStreamFailed(1, "")).toBe(false)
+  expect(isStreamSynthesized("tts-stream: synthesized\n")).toBe(true)
 })
