@@ -385,10 +385,11 @@ export const register: Register = (on, options) => {
       showEngineIssue(issue)
       if (issue === undefined) publishEngine("ok")
     }
-    // Published alone, with no status line: an engine stopped on purpose would otherwise leave a warning pinned.
+    // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
     const showEngineIssue = (issue: string | undefined) => {
       if (issue === engineIssue) return
       engineIssue = issue
+      $.ui.status(issue)
       if (issue !== undefined) publishEngine(/unset$/.test(issue) ? "unset" : "down")
     }
     // Published one write after another: a slow write never lands after the one that followed it.
@@ -420,12 +421,12 @@ export const register: Register = (on, options) => {
     // The last module's line stays after a reload.
     $.ui.status(undefined)
 
-    // The fallback reads on quietly: the debug log and the published engine state say the engine is failing.
+    // The fallback reads on quietly: the status line says the engine is failing.
     const reportFallback = (error: unknown) => {
       $.ui.log(`tts: ${config.engine} failed, read with ${config.fallback}: ${String(error)}`, { to: "debug" })
     }
 
-    // No toast: an engine stopped on purpose fails every sentence, and `/tts engine` says what is wrong.
+    // No toast: an engine stopped on purpose fails every sentence, and the status line already says it is down.
     const reportError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       $.ui.log(`tts: ${message}`, { to: "debug" })

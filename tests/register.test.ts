@@ -871,16 +871,6 @@ test("an engine check answering after a failed synthesis does not report the eng
   expect(published.at(-1)).toEqual({ name: "command", voice: "synth {out}", status: "down" })
 })
 
-/** Records each engine status published, latest last. */
-function engineStatusesOf(on: On) {
-  const statuses: string[] = []
-  on("state.set", (_, e, next) => {
-    if (e.key === "engine") statuses.push((e.value as { status: string }).status)
-    return next(e)
-  })
-  return statuses
-}
-
 /** Records each speech state published, latest last. */
 function speechStates(on: On) {
   const states: unknown[] = []
@@ -1040,7 +1030,6 @@ test("the next sentence is synthesized while the first still plays, once the eng
 
 test("a stream that plays notes the engine as up, and one cut short is an error", { options: voicevox }, async ($, on) => {
   const observed = host(on)
-  const engineStatuses = engineStatusesOf(on)
   observed.engine.synthesisExit = 7
   await $.session.start(start)
   observed.engine.streamExit = 56
@@ -1048,15 +1037,14 @@ test("a stream that plays notes the engine as up, and one cut short is an error"
   await $.command.run(command("test 一文目。"))
   await observed.idle()
   await settle()
-  expect(engineStatuses.at(-1)).toBe("down")
-  expect(observed.statuses.filter(Boolean)).toEqual([])
+  expect(observed.statuses.at(-1)).toBe("voicevox down")
   expect(observed.toasts).toEqual([])
   observed.engine.streamExit = 0
   observed.engine.streamStderr = ""
   await $.command.run(command("test 二文目。"))
   await observed.idle()
   await settle()
-  expect(engineStatuses.at(-1)).toBe("ok")
+  expect(observed.statuses.at(-1)).toBeUndefined()
 })
 
 test("an engine that refuses to stream reads the sentence from a file, and twice in a row is not asked to stream again", { options: voicevox }, async ($, on) => {
@@ -1118,7 +1106,6 @@ test("an engine that fails before it streams falls back at once, not after faili
   options: { ...voicevox, fallback: "command", command: "synth {out}" },
 }, async ($, on) => {
   const observed = host(on)
-  const engineStatuses = engineStatusesOf(on)
   observed.engine.queryExit = 7
   await $.session.start(start)
   await $.command.run(command("test 一文目。"))
@@ -1126,8 +1113,7 @@ test("an engine that fails before it streams falls back at once, not after faili
   await settle()
   expect(observed.processes.filter(e => e.argv.some(arg => arg.includes("/audio_query")))).toHaveLength(1)
   expect(observed.spoken()).toEqual(["一文目。"])
-  expect(engineStatuses.at(-1)).toBe("down")
-  expect(observed.statuses.filter(Boolean)).toEqual([])
+  expect(observed.statuses.at(-1)).toBe("voicevox down")
 })
 
 test("a clip read from a file after a refusal leaves no trimmed copy behind", { options: voicevox }, async ($, on) => {
