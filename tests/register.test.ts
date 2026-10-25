@@ -1050,7 +1050,7 @@ test("a stream that plays notes the engine as up, and one cut short is an error"
   await settle()
   expect(engineStatuses.at(-1)).toBe("down")
   expect(observed.statuses.filter(Boolean)).toEqual([])
-  expect(observed.toasts.at(-1)).toContain("stream failed")
+  expect(observed.toasts).toEqual([])
   observed.engine.streamExit = 0
   observed.engine.streamStderr = ""
   await $.command.run(command("test 二文目。"))

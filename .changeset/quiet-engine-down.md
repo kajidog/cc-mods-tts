@@ -2,4 +2,4 @@
 "cc-mods-tts": patch
 ---
 
-エンジンが落ちている間、ステータス行に `⚠ tts: voicevox down` を出し続けないようにした。状態は `/tts engine` と `{ plugin: "tts", key: "engine" }` で確認できる。
+読み上げに失敗してもトーストを出さず、エンジンが落ちている間もステータス行に `⚠ tts: voicevox down` を出さないようにした。失敗は debug ログに残る。状態は `/tts engine` と `{ plugin: "tts", key: "engine" }` で確認できる。

@@ -376,7 +376,6 @@ export const register: Register = (on, options) => {
     // give it back now rather than make other sessions wait for it to go stale.
     if (inheritedFloorName !== null) await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
     let clipCount = 0
-    let lastErrorAt = 0
 
     // Counts what was learned of the engine: a check whose answer comes after a later synthesis is stale.
     let engineNews = 0
@@ -426,12 +425,10 @@ export const register: Register = (on, options) => {
       $.ui.log(`tts: ${config.engine} failed, read with ${config.fallback}: ${String(error)}`, { to: "debug" })
     }
 
+    // No toast: an engine stopped on purpose fails every sentence, and `/tts engine` says what is wrong.
     const reportError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       $.ui.log(`tts: ${message}`, { to: "debug" })
-      // One toast per burst: a server that is down fails every sentence of a reply.
-      if (Date.now() - lastErrorAt > 30_000) $.ui.toast(`tts: ${message}`)
-      lastErrorAt = Date.now()
     }
 
     /**
