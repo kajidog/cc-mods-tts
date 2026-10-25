@@ -81,7 +81,7 @@ claude --plugin-dir ~/cc-mods-tts
 
 ### OS 標準の音声を使う場合（engine=command）
 
-VOICEVOX などを入れなくても、OS に入っている音声で読めます。エンジンは VOICEVOX のままにして、OS の音声を予備にもできます。`TTS: Command` を設定し、`/config` の `TTS: Fallback engine` を `command` にしておくと、VOICEVOX が起動していないときや落ちたときでも、その文を OS の音声で読みます。VOICEVOX が戻れば、次の文からまた VOICEVOX で読みます。VOICEVOX が使えない間は、ステータス行に `⚠ tts: voicevox down` と出ます。
+VOICEVOX などを入れなくても、OS に入っている音声で読めます。エンジンは VOICEVOX のままにして、OS の音声を予備にもできます。`TTS: Command` を設定し、`/config` の `TTS: Fallback engine` を `command` にしておくと、VOICEVOX が起動していないときや落ちたときでも、その文を OS の音声で読みます。VOICEVOX が戻れば、次の文からまた VOICEVOX で読みます。エンジンの状態は `/tts engine` で確認できます（ステータス行には出しません）。
 
 <details>
 <summary>macOS・Windows・Linux のコマンド例</summary>
@@ -227,7 +227,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | TTS: Enabled（`enabled`） | 読み上げる / 読み上げない | true |
 | TTS: Read mode（`mode`） | `stream` / `final` / `notify`（上記） | stream |
 | TTS: Engine（`engine`） | `voicevox` / `irodori` / `command` | voicevox |
-| TTS: Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
+| TTS: Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。予備で読んでいる間も通知は出さない | none |
 | TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1.1 |
 | TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
 | TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
