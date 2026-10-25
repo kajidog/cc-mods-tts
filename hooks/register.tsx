@@ -198,6 +198,8 @@ export const register: Register = (on, options) => {
   let noticeCount = 0
   // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
   let engineIssue: string | undefined
+  // Set by a sentence that could not be read; shown as "失敗" beneath an engine issue, cleared once the engine reads again.
+  let isFailed = false
   // The blocks `/tts replay select` last offered; a pick names one by its index.
   let replayChoices: string[] = []
   // Set by session.start: probes the engine in use and shows the result.
@@ -381,15 +383,23 @@ export const register: Register = (on, options) => {
     let engineNews = 0
     const noteEngine = (error?: unknown) => {
       engineNews += 1
+      if (error === undefined) isFailed = false
       const issue = error === undefined ? undefined : `${config.engine} ${/is not set/.test(String(error)) ? "unset" : "down"}`
       showEngineIssue(issue)
       if (issue === undefined) publishEngine("ok")
     }
-    // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
+    // The status line shows only a failure; Claude Code draws it as "⚠ tts: voicevox down", or "⚠ tts: 失敗" with the engine up.
+    let shownStatus: string | undefined
+    const showStatus = () => {
+      const status = engineIssue ?? (isFailed ? "失敗" : undefined)
+      if (status === shownStatus) return
+      shownStatus = status
+      $.ui.status(status)
+    }
     const showEngineIssue = (issue: string | undefined) => {
-      if (issue === engineIssue) return
+      if (issue === engineIssue) return showStatus()
       engineIssue = issue
-      $.ui.status(issue)
+      showStatus()
       if (issue !== undefined) publishEngine(/unset$/.test(issue) ? "unset" : "down")
     }
     // Published one write after another: a slow write never lands after the one that followed it.
@@ -426,10 +436,12 @@ export const register: Register = (on, options) => {
       $.ui.log(`tts: ${config.engine} failed, read with ${config.fallback}: ${String(error)}`, { to: "debug" })
     }
 
-    // No toast: an engine stopped on purpose fails every sentence, and the status line already says it is down.
+    // No toast: an engine stopped on purpose fails every sentence. The status line says so; the debug log says why.
     const reportError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       $.ui.log(`tts: ${message}`, { to: "debug" })
+      isFailed = true
+      showStatus()
     }
 
     /**
@@ -766,6 +778,7 @@ export const register: Register = (on, options) => {
 
     // Checked at once, so a start or an engine switch shows a dead engine before anything is read.
     recheckEngine = () => {
+      isFailed = false
       showEngineIssue(undefined)
       if (!isEnabled) return publishEngine("off")
       publishEngine("checking")

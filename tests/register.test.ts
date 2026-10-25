@@ -21,10 +21,12 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   // The exit code of the floor's commands; every one succeeds unless a test says otherwise.
   // "block" waits until the command is cancelled, or until `unblock` lets every blocked one succeed.
   // `isMarked` false plays a player that exits 75 or 76 itself, saying nothing of the floor.
+  // `playError` is what starting a player throws, as a player that cannot run does.
   const unblocked: (() => void)[] = []
   const floor = {
     exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0,
     isMarked: true,
+    playError: undefined as Error | undefined,
     unblock: () => {
       for (const resolve of unblocked.splice(0)) resolve()
     },
@@ -81,6 +83,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     const isStream = e.argv.includes("tts-stream")
     if (isStream && !engine.isStreamRefused && engine.streamStderr !== "") yield { stream: "stderr" as const, text: engine.streamStderr }
     const kind = floorKind(e.argv)
+    if (kind === "play" && floor.playError !== undefined) throw floor.playError
     if (kind !== undefined) {
       const code = floor.exit(kind, e.argv)
       if (code === "block") {
@@ -1041,6 +1044,22 @@ test("a stream that plays notes the engine as up, and one cut short is an error"
   expect(observed.toasts).toEqual([])
   observed.engine.streamExit = 0
   observed.engine.streamStderr = ""
+  await $.command.run(command("test 二文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.statuses.at(-1)).toBeUndefined()
+})
+
+test("a sentence that cannot be played says 失敗 on the status line, with no toast, until one reads again", { options: voicevox }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.playError = new Error("player broke")
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.statuses.at(-1)).toBe("失敗")
+  expect(observed.toasts).toEqual([])
+  observed.floor.playError = undefined
   await $.command.run(command("test 二文目。"))
   await observed.idle()
   await settle()

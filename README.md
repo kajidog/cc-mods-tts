@@ -81,7 +81,7 @@ claude --plugin-dir ~/cc-mods-tts
 
 ### OS 標準の音声を使う場合（engine=command）
 
-VOICEVOX などを入れなくても、OS に入っている音声で読めます。エンジンは VOICEVOX のままにして、OS の音声を予備にもできます。`TTS: Command` を設定し、`/config` の `TTS: Fallback engine` を `command` にしておくと、VOICEVOX が起動していないときや落ちたときでも、その文を OS の音声で読みます。VOICEVOX が戻れば、次の文からまた VOICEVOX で読みます。VOICEVOX が使えない間は、ステータス行に `⚠ tts: voicevox down` と出ます。
+VOICEVOX などを入れなくても、OS に入っている音声で読めます。エンジンは VOICEVOX のままにして、OS の音声を予備にもできます。`TTS: Command` を設定し、`/config` の `TTS: Fallback engine` を `command` にしておくと、VOICEVOX が起動していないときや落ちたときでも、その文を OS の音声で読みます。VOICEVOX が戻れば、次の文からまた VOICEVOX で読みます。VOICEVOX が使えない間は、ステータス行に `⚠ tts: voicevox down` と出ます。エンジンは動いているのに読めなかったとき（プレイヤーが起動できないなど）は `⚠ tts: 失敗` と出ます。どちらも次に読めれば消え、トーストは出しません。
 
 <details>
 <summary>macOS・Windows・Linux のコマンド例</summary>
