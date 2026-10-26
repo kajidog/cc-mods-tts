@@ -198,7 +198,7 @@ export const register: Register = (on, options) => {
   let noticeCount = 0
   // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
   let engineIssue: string | undefined
-  // Set by a sentence that could not be read; shown as "失敗" beneath an engine issue, cleared once the engine reads again.
+  // Set by a sentence that could not be read; shown as "失敗" beneath an engine issue, cleared once a clip plays.
   let isFailed = false
   // The blocks `/tts replay select` last offered; a pick names one by its index.
   let replayChoices: string[] = []
@@ -383,7 +383,6 @@ export const register: Register = (on, options) => {
     let engineNews = 0
     const noteEngine = (error?: unknown) => {
       engineNews += 1
-      if (error === undefined) isFailed = false
       const issue = error === undefined ? undefined : `${config.engine} ${/is not set/.test(String(error)) ? "unset" : "down"}`
       showEngineIssue(issue)
       if (issue === undefined) publishEngine("ok")
@@ -737,6 +736,11 @@ export const register: Register = (on, options) => {
         if (!isAlone && floorOutcome(played.code, played.stderr) !== undefined) {
           isHoldingFloor = false
           continue
+        }
+        // Cleared by a clip heard, not by one synthesized: synthesis runs ahead of playback.
+        if (played.code === 0 && isFailed) {
+          isFailed = false
+          showStatus()
         }
         if (source === undefined) return
         if (!isStreamRefused(played.code, played.stderr)) return noteStream(clip, source, played)
