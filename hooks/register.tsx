@@ -198,6 +198,8 @@ export const register: Register = (on, options) => {
   let noticeCount = 0
   // Set while the engine in use fails ("voicevox down"); shown beside playback until it reads again.
   let engineIssue: string | undefined
+  // Set by a sentence that could not be read; shown as "失敗" beneath an engine issue, cleared once a clip plays.
+  let isFailed = false
   // The blocks `/tts replay select` last offered; a pick names one by its index.
   let replayChoices: string[] = []
   // Set by session.start: probes the engine in use and shows the result.
@@ -376,7 +378,6 @@ export const register: Register = (on, options) => {
     // give it back now rather than make other sessions wait for it to go stale.
     if (inheritedFloorName !== null) await $.process.run(releaseCommand(isWindows, floorName)).catch(() => undefined)
     let clipCount = 0
-    let lastErrorAt = 0
 
     // Counts what was learned of the engine: a check whose answer comes after a later synthesis is stale.
     let engineNews = 0
@@ -386,11 +387,18 @@ export const register: Register = (on, options) => {
       showEngineIssue(issue)
       if (issue === undefined) publishEngine("ok")
     }
-    // The status line shows only a failing engine; Claude Code draws it as "⚠ tts: voicevox down".
+    // The status line shows only a failure; Claude Code draws it as "⚠ tts: voicevox down", or "⚠ tts: 失敗" with the engine up.
+    let shownStatus: string | undefined
+    const showStatus = () => {
+      const status = engineIssue ?? (isFailed ? "失敗" : undefined)
+      if (status === shownStatus) return
+      shownStatus = status
+      $.ui.status(status)
+    }
     const showEngineIssue = (issue: string | undefined) => {
-      if (issue === engineIssue) return
+      if (issue === engineIssue) return showStatus()
       engineIssue = issue
-      $.ui.status(issue)
+      showStatus()
       if (issue !== undefined) publishEngine(/unset$/.test(issue) ? "unset" : "down")
     }
     // Published one write after another: a slow write never lands after the one that followed it.
@@ -427,12 +435,12 @@ export const register: Register = (on, options) => {
       $.ui.log(`tts: ${config.engine} failed, read with ${config.fallback}: ${String(error)}`, { to: "debug" })
     }
 
+    // No toast: an engine stopped on purpose fails every sentence. The status line says so; the debug log says why.
     const reportError = (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error)
       $.ui.log(`tts: ${message}`, { to: "debug" })
-      // One toast per burst: a server that is down fails every sentence of a reply.
-      if (Date.now() - lastErrorAt > 30_000) $.ui.toast(`tts: ${message}`)
-      lastErrorAt = Date.now()
+      isFailed = true
+      showStatus()
     }
 
     /**
@@ -729,6 +737,11 @@ export const register: Register = (on, options) => {
           isHoldingFloor = false
           continue
         }
+        // Cleared by a clip heard, not by one synthesized: synthesis runs ahead of playback.
+        if (played.code === 0 && isFailed) {
+          isFailed = false
+          showStatus()
+        }
         if (source === undefined) return
         if (!isStreamRefused(played.code, played.stderr)) return noteStream(clip, source, played)
         await readInstead(clip, source, player)
@@ -769,6 +782,7 @@ export const register: Register = (on, options) => {
 
     // Checked at once, so a start or an engine switch shows a dead engine before anything is read.
     recheckEngine = () => {
+      isFailed = false
       showEngineIssue(undefined)
       if (!isEnabled) return publishEngine("off")
       publishEngine("checking")

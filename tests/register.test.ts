@@ -21,10 +21,12 @@ function host(on: On, blockedInput?: string, isWindows = false) {
   // The exit code of the floor's commands; every one succeeds unless a test says otherwise.
   // "block" waits until the command is cancelled, or until `unblock` lets every blocked one succeed.
   // `isMarked` false plays a player that exits 75 or 76 itself, saying nothing of the floor.
+  // `playError` is what starting the next player throws, once, as a player that cannot run does.
   const unblocked: (() => void)[] = []
   const floor = {
     exit: (_kind: "acquire" | "play", _argv: readonly string[]): number | "block" => 0,
     isMarked: true,
+    playError: undefined as Error | undefined,
     unblock: () => {
       for (const resolve of unblocked.splice(0)) resolve()
     },
@@ -81,6 +83,11 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     const isStream = e.argv.includes("tts-stream")
     if (isStream && !engine.isStreamRefused && engine.streamStderr !== "") yield { stream: "stderr" as const, text: engine.streamStderr }
     const kind = floorKind(e.argv)
+    if (kind === "play" && floor.playError !== undefined) {
+      const error = floor.playError
+      floor.playError = undefined
+      throw error
+    }
     if (kind !== undefined) {
       const code = floor.exit(kind, e.argv)
       if (code === "block") {
@@ -1038,12 +1045,38 @@ test("a stream that plays notes the engine as up, and one cut short is an error"
   await observed.idle()
   await settle()
   expect(observed.statuses.at(-1)).toBe("voicevox down")
-  expect(observed.toasts.at(-1)).toContain("stream failed")
+  expect(observed.toasts).toEqual([])
   observed.engine.streamExit = 0
   observed.engine.streamStderr = ""
   await $.command.run(command("test 二文目。"))
   await observed.idle()
   await settle()
+  expect(observed.statuses.at(-1)).toBeUndefined()
+})
+
+test("a sentence that cannot be played says 失敗 on the status line, with no toast, until one reads again", { options: voicevox }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.playError = new Error("player broke")
+  await $.session.start(start)
+  await $.command.run(command("test 一文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.statuses.at(-1)).toBe("失敗")
+  expect(observed.toasts).toEqual([])
+  await $.command.run(command("test 二文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.statuses.at(-1)).toBeUndefined()
+})
+
+test("失敗 clears once the next clip plays, though it was synthesized before the failure", { options: { engine: "command", command: "synth {out}", player: "aplay" } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  observed.floor.playError = new Error("player broke")
+  await $.command.run(command("test 一文目。二文目。"))
+  await observed.idle()
+  await settle()
+  expect(observed.statuses).toContain("失敗")
   expect(observed.statuses.at(-1)).toBeUndefined()
 })
 
