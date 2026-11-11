@@ -32,7 +32,7 @@ Claude Code の mod（関数フックのプラグイン）。Claude の返答を
 
 ## セットアップ
 
-Claude Code 2.1.287 以降（Mods が既定で有効なバージョン）。どちらか一方で使えるようにできます。
+Claude Code 2.1.314 以降（回答の下の行 `$.ui.place` が入ったバージョン）。どちらか一方で使えるようにできます。
 
 ### A. GitHub からインストール（使うだけなら）
 
@@ -158,6 +158,8 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | `/tts voice [id]` | 引数なしで声を選ぶペインを開く（↑↓で移動、Enter で決定、Esc で閉じる）。id 指定で直接設定 |
 | `/tts speed [n]` / `/tts volume [n]` | 速度・音量（1 が等倍）。引数なしで候補を選ぶペインを開く |
 
+回答が終わるたびに、その下に「▶ 読み上げ」ボタンの行を置きます。押すと、その回答を文字数の上限なしで最初から読み直します。その回答を読んでいる間は「■ 止める」に変わり、押すと止まります。行は画面だけのもので、Claude には渡りません。`--resume` で再開した会話には出ず、ボタンが使えるのは最新の50件までです。いらなければ `/config` の `TTS: Replay button under answers` をオフにしてください。
+
 声の候補が多い場合は64件ずつ表示します。`p` / `n`（Previous / Next）でページを切り替え、↑↓と Enter で選択できます。最初は現在の声があるページを開きます。
 
 ### 読み上げモード
@@ -211,6 +213,7 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 - **停止:** 合成のリクエストも中断します。ただし TTS サーバーが切断後も計算を続ける場合は、終わるまで次の合成が待たされることがあります。
 - **語尾の途切れ:** `ffplay` / `powershell` では、無音を除いた WAV の後ろに0.2秒の無音を足します。`ffmpeg` が必要で、ない場合は元の音声をそのまま再生します。
 - **ストリーミング再生:** VOICEVOX 0.26 以降では、何も再生していないときの文を、合成しながら再生します（長い文ほど早く喋り始めます）。続く文はその間にファイルへ合成します。`ffplay` と `ffmpeg` がある Linux・macOS・WSL で使い、設定はいりません。ストリーミングに対応していないエンジン（0.25 以前など）では一度だけ試して、以降はファイルで合成します。ストリーミングでは文末の長い無音は削りません。
+- **Claude Code に再生させる（`player: claude`）:** 再生コマンドを使わず、Claude Code の音声再生（`$.audio.play`）に WAV を渡します。音量は 0〜4 の範囲で効きます。Claude Code の説明では、macOS では afplay で再生し、Linux・Windows のターミナルでは再生手段がなく何も鳴りません。ストリーミング再生は使わず、毎回ファイルに合成します。`auto` では選ばれないので、使うときは `/config` の `TTS: Player` を `claude` にしてください。
 - **WSL のノイズ:** `ffplay` は WSLg を経由するため、「ジリジリ」とノイズが混じることがあります。`/config` の `TTS: Player` を `powershell` にすると改善します（文と文の間は少し空きます）。
 
 </details>
@@ -230,11 +233,12 @@ B の場合は `--plugin-dir` を付けずに起動するか、`CLAUDE_CODE_PLUG
 | TTS: Fallback engine（`fallback`） | メインのエンジンが失敗した文（サーバー停止・未設定など）を読むエンジン。メインが使えない間は、ステータス行に `⚠ tts: voicevox down` のように出る | none |
 | TTS: Speed（`speed`） | 速度。エンジン側で合成時にかける（Irodori は 0.25〜4、VOICEVOX は speedScale）。command では無視 | 1.1 |
 | TTS: Volume（`volume`） | 音量。再生時にかけるのでどのエンジンでも効く。ffplay / paplay / afplay は再生コマンドで、aplay / powershell は ffmpeg があれば再生前に変える | 1 |
-| TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの | auto |
+| TTS: Player（`player`） | 再生コマンド。`auto` は Windows ネイティブでは ffplay → powershell.exe、それ以外では ffplay → paplay → aplay → afplay → powershell.exe の順に最初に見つかったもの。`claude` は Claude Code に再生させる（上記） | auto |
 | TTS: Max characters per response（`maxCharsPerTurn`） | 1回の応答で読む最大文字数。超えたら「途中を省略します。」と言って残りを飛ばし、応答の最後の1文だけ読む。0 で無制限 | 600 |
 | TTS: Take turns with other sessions（`sharePlayback`） | 複数のセッションが読み上げるとき、1つずつ順番に再生する。オフにすると各セッションがすぐに再生する（音声が重なることがある） | オン |
 | TTS: Max wait for other sessions（`maxWaitSeconds`） | ほかのセッションが読み上げている間、ツール前の発言を待たせる最大秒数。超えたら捨てる。通知と最終回答は常に待って読む。0 で無制限 | 60 |
 | TTS: Stop on new prompt（`interruptOnPrompt`） | プロンプト送信で読み上げを止める | true |
+| TTS: Replay button under answers（`replayButton`） | 回答の下に、読み直す・止めるボタンの行を置く | true |
 | TTS: Prompt for the model（`modelPrompt`） | 読み上げ中（stream / final モード）に Claude のシステムプロンプトへ足す文。説明・進捗報告は原則日本語にし、コード・引用・ユーザーの言語指定は保持する。空にすると何も足さない | 応答は音声で読み上げられています。説明やツール呼び出しの合間の進捗報告は原則として日本語で書いてください。ただし、コード・識別子・引用はそのまま保持し、ユーザーが指定した言語を優先してください。 |
 | TTS: Read the summary only（`summary`） | 長い回答の1行目に要約を書くよう Claude に頼み、要約があればそれだけ読む（stream / final モード）。`/tts summary on` / `off` と同じ | false |
 | TTS: Irodori URL（`irodoriUrl`） | Irodori-TTS の URL | `http://localhost:8088` |
@@ -267,7 +271,7 @@ Irodori の速度の対応範囲は **0.25〜4** です。Mod ではこの下限
 - `curl`（Windows では `curl.exe`）
 - `mktemp`（macOS / Linux / WSL の一時ディレクトリ作成に使用）
 - Windows ネイティブ: Windows PowerShell（`powershell.exe`、一時ファイルの管理と再生に使用）
-- 再生: `ffplay` / `paplay` / `aplay` / `afplay` / `powershell.exe`（Windows・WSL）のいずれか（`player: auto` で自動選択）
+- 再生: `ffplay` / `paplay` / `aplay` / `afplay` / `powershell.exe`（Windows・WSL）のいずれか（`player: auto` で自動選択）。`player: claude` では不要（macOS / Linux / WSL では `base64` を使う）
 
 ## 開発
 
@@ -284,7 +288,7 @@ npm run check  # lint・validate・型チェック・test をまとめて実行
 
 CI（`.github/workflows/ci.yml`）は main への push と PR で lint を実行し、Linux・Windows で validate・型チェック・test を実行します。型チェックの前に、上記の初期化コマンドで `.claude-plugin/types/` を生成します。対話セッションや API キーは不要です。
 
-API は early access のため、Claude Code の更新で変わることがある（CI で確認しているバージョン: 2.1.296）。
+API は early access のため、Claude Code の更新で変わることがある（CI で確認しているバージョン: 2.1.314）。
 
 
 ### エンジンを追加する
@@ -298,7 +302,7 @@ API は early access のため、Claude Code の更新で変わることがあ�
 
 ### 状態を別の Mod で表示する
 
-この Mod は画面に UI を出しません（エンジンが落ちたときのステータス行だけ出します）。読んでいる文やエンジンの状態は `$.state` に公開しているので、表示は別の Mod で作れます。型は `types/index.d.ts` の `SpeechState` / `EngineState` です。
+この Mod が画面に出すのは、回答の下の読み直しボタンと、エンジンが落ちたときのステータス行だけです。読んでいる文やエンジンの状態は `$.state` に公開しているので、表示は別の Mod で作れます。型は `types/index.d.ts` の `SpeechState` / `EngineState` です。
 
 | キー | 中身 |
 |---|---|

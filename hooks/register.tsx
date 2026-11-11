@@ -1,7 +1,7 @@
 import { atom, read, update } from "claude-code"
 import type { EngineInterface, Register } from "claude-code"
 
-import type { EngineState, Picker, Setting, SpeechState, Tts } from "../types"
+import type { AnswerRow, AnswerRows, EngineState, Picker, Setting, SpeechState, Tts } from "../types"
 
 import { Channel } from "./channel"
 import { type Notices, type ReadMode, type TtsConfig, toConfig } from "./config"
@@ -24,11 +24,14 @@ import { type Pin, PINS_KEY, type Pins, pinnedOptions, toPins } from "./pins"
 import { lastAnswer, replayBlocks, replayOptions } from "./replay"
 import { removeDirectoryCommand, removeFilesCommand, tempDirectoryCommand } from "./platform"
 import {
+  base64Command,
+  CLAUDE_PLAYER,
   canStream,
   findPlayerCommand,
   isStreamFailed,
   isStreamRefused,
   isStreamSynthesized,
+  noopCommand,
   playCommand,
   prepareAudioCommand,
   streamPlayCommand,
@@ -68,6 +71,12 @@ const floorId = atom({ plugin: "tts", key: "floorId" } as const, null as string 
 // Published for other mods to show; this mod only writes them.
 const speechState = atom({ plugin: "tts", key: "speech" } as const, { state: "idle", text: null } as SpeechState)
 const engineState = atom({ plugin: "tts", key: "engine" } as const, { name: "", voice: "", status: "checking" } as EngineState)
+// The answers the rows under them read again; kept across a reload, as the rows are.
+const answerRows = atom({ plugin: "tts", key: "answers" } as const, { rows: [], count: 0, reading: null } as AnswerRows)
+/** How many answers keep their row's button; an older row draws nothing. */
+const MAX_ANSWER_ROWS = 50
+/** The longest base64 the player `claude` reads in one go: SpeechProcess keeps 4 MiB of stdout. */
+const MAX_BASE64 = 4_194_304
 
 /** Irodori runs diffusion with a concurrency of 1, so one request can take minutes. */
 const SYNTH_TIMEOUT_MS = 300_000
@@ -143,6 +152,8 @@ export const register: Register = (on, options) => {
   let onAllPlayed = () => {}
   // Set by session.start: publishes that nothing is left to say.
   let onIdle = () => {}
+  // Set by session.start: publishes which answer row's answer is being read, null for none.
+  let publishReading = (_id: string | null) => {}
   // Set by session.start: writes the published state again after /clear, resume or /branch reset it.
   let republishState = () => {}
   const track = (origin: Origin) => {
@@ -179,6 +190,13 @@ export const register: Register = (on, options) => {
   let player: string | undefined
   const synthesisProcess = new SpeechProcess()
   const playbackProcess = new SpeechProcess()
+  // Stops the clip Claude Code plays for the player `claude`, which runs no process to kill.
+  let claudePlayback: AbortController | undefined
+  /** Stops playback, a player's process or Claude Code's. */
+  const stopPlayback = () => {
+    claudePlayback?.abort()
+    return playbackProcess.stop()
+  }
   const floorProcess = new SpeechProcess()
   const sentences = new Channel<Sentence>()
   // The sentence being synthesized: the next clip to play, whose priority a holder between clips yields by.
@@ -230,7 +248,7 @@ export const register: Register = (on, options) => {
     generation += 1
     // Shown at once: what was queued is cleaned up after, which can take seconds.
     onIdle()
-    await Promise.all([synthesisProcess.stop(), playbackProcess.stop(), floorProcess.stop()])
+    await Promise.all([synthesisProcess.stop(), stopPlayback(), floorProcess.stop()])
   }
 
   /** Stops as `stop` does, and drops the response streaming now: unlike `/tts stop`, the turn's later responses are read. */
@@ -319,7 +337,7 @@ export const register: Register = (on, options) => {
     for (let step = turnFirstStep; step <= stepCount; step++) skippedSteps.add(step)
     const cuts: Promise<void>[] = []
     if (synthesizing !== undefined && !isLive(synthesizing)) cuts.push(synthesisProcess.stop())
-    if (playing !== undefined && !isLive(playing)) cuts.push(playbackProcess.stop(), floorProcess.stop())
+    if (playing !== undefined && !isLive(playing)) cuts.push(stopPlayback(), floorProcess.stop())
     await Promise.all(cuts)
   }
 
@@ -425,8 +443,18 @@ export const register: Register = (on, options) => {
       shownSpeech = key
       publish(() => update($, speechState, () => speech))
     }
-    onIdle = () => publishSpeech({ state: "idle", text: null })
-    publishSpeech({ state: "idle", text: null })
+    // Which row's answer is read; undefined until written, so a reload clears what the last module left.
+    let shownReading: string | null | undefined
+    publishReading = id => {
+      if (id === shownReading) return
+      shownReading = id
+      publish(() => update($, answerRows, rows => ({ ...rows, reading: id })))
+    }
+    onIdle = () => {
+      publishSpeech({ state: "idle", text: null })
+      publishReading(null)
+    }
+    onIdle()
     // The last module's line stays after a reload.
     $.ui.status(undefined)
 
@@ -667,6 +695,32 @@ export const register: Register = (on, options) => {
       reportError(error)
     }
 
+    /**
+     * Has Claude Code play `clip` (the player `claude`), checking first, with `priority`, that the floor is still
+     * this session's, as guardedPlayCommand does for a player's process. Ends as that process would: 0 once
+     * played, or a stop; the floor's code where it was handed over or lost.
+     */
+    const playThroughClaude = async (clip: Clip, priority: number | undefined): Promise<{ code: number | null; stderr: string }> => {
+      if (priority !== undefined) {
+        const guard = await playbackProcess.read($.process.spawn({ argv: guardedPlayCommand(isWindows, floorName, priority, noopCommand(isWindows)) }))
+        if (guard.code !== 0) return guard
+      }
+      if (!isLive(clip)) return { code: null, stderr: "" }
+      const encoded = await runProcess($, playbackProcess, base64Command(clip.file, isWindows), undefined, 30_000)
+      if (!isLive(clip)) return { code: null, stderr: "" }
+      if (encoded.code !== 0) throw new Error(`base64 exited ${encoded.code}: ${encoded.stderr.trim().slice(0, 200)}`)
+      if (encoded.stdout.length >= MAX_BASE64) throw new Error("the clip is too long for the player claude")
+      const controller = new AbortController()
+      claudePlayback = controller
+      try {
+        const gain = Math.min(4, Math.max(0, config.volume))
+        await $.audio.play({ base64: encoded.stdout.replace(/\s+/g, ""), mime: "audio/wav" }, { gain, signal: controller.signal })
+      } finally {
+        if (claudePlayback === controller) claudePlayback = undefined
+      }
+      return { code: 0, stderr: "" }
+    }
+
     /** Plays `clip` on the floor; drops it instead when it is stream text that waited past the limit. */
     const playClip = async (clip: Clip, player: string) => {
       // Cleared once the engine refuses to stream: the clip is read from its file then.
@@ -731,7 +785,9 @@ export const register: Register = (on, options) => {
         if (!isAlone) heldPriority = priority
         publishSpeech({ state: "playing", text: clip.text })
         const argv = isAlone ? play : guardedPlayCommand(isWindows, floorName, priority, play)
-        const played = await keepFloor(playbackProcess.read($.process.spawn({ argv, input }), onStderr))
+        const played = player === CLAUDE_PLAYER
+          ? await keepFloor(playThroughClaude(clip, isAlone ? undefined : priority))
+          : await keepFloor(playbackProcess.read($.process.spawn({ argv, input }), onStderr))
         // Handed to a session with something more urgent, or lost as stale: wait for the floor again.
         if (!isAlone && floorOutcome(played.code, played.stderr) !== undefined) {
           isHoldingFloor = false
@@ -1049,9 +1105,9 @@ export const register: Register = (on, options) => {
 
   on("turn.complete", async ($, e, next) => {
     if (e.reason === "aborted" && e.agentId === undefined) await stop()
+    // An answer streaming when `$.tts` stopped is not read at the turn's end either; a notice still is.
+    const isDropped = stoppedResponse === responseCount
     if (isEnabled && !isTurnMuted && e.agentId === undefined) {
-      // An answer streaming when `$.tts` stopped is not read at the turn's end either; a notice still is.
-      const isDropped = stoppedResponse === responseCount
       // Stream: text from before the answer still waiting gives way to the answer, read from its start.
       // Once the answer is being read, nothing earlier waits and it reads on: it is never said twice.
       if (config.mode === "stream" && e.reason === "answer") {
@@ -1073,7 +1129,52 @@ export const register: Register = (on, options) => {
       const notice = TURN_NOTICES[e.reason]
       if (config.mode === "notify" && notice !== undefined && config.notices[notice] !== "") enqueue([config.notices[notice]])
     }
-    return next(e)
+    const completed = await next(e)
+    // Placed once the turn has ended, so the row comes after everything the turn wrote.
+    if (isEnabled && config.replayButton && e.agentId === undefined && e.reason === "answer" && e.answer.trim() !== "") {
+      // The answer is read now where its mode reads answers and speech is still queued: in stream, it may be done already.
+      const isRead = config.mode !== "notify" && !isTurnMuted && !isDropped && unplayed.size > 0
+      const updated = await update($, answerRows, ({ rows, count, reading }) => {
+        const row: AnswerRow = { id: `answer-${count + 1}`, text: e.answer }
+        return { rows: [...rows, row].slice(-MAX_ANSWER_ROWS), count: count + 1, reading }
+      })
+      const id = `answer-${updated.count}`
+      if (isRead) publishReading(id)
+      // Display only: a surface that cannot draw the row, or a Claude Code without rows, leaves the answer as it was.
+      await $.ui.place({ id }).then(
+        placed => placed.isPlaced || $.ui.log(`tts: no replay row: ${placed.reason}`, { to: "debug" }),
+        (error: unknown) => $.ui.log(`tts: no replay row: ${String(error)}`, { to: "debug" }),
+      )
+    }
+    return completed
+  })
+
+  // The row under an answer: a button that reads it again, whole, and stops it while it is read.
+  on("ui.render", { component: "Placed" }, async ($, e, next) => {
+    if (e.props.plugin !== "tts") return next(e)
+    const { rows, reading } = await read($, answerRows)
+    const row = rows.find(each => each.id === e.props.id)
+    // A row past the ones kept draws nothing.
+    if (row === undefined) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const isReading = reading === row.id
+    const readAgain = async () => {
+      if (!isEnabled) return $.ui.toast("tts: off (/tts on)")
+      await replay(row.text)
+      // Code or tables alone leave nothing to read.
+      if (unplayed.size > 0) publishReading(row.id)
+    }
+    return (
+      <Box>
+        <Button
+          key="replay"
+          label={isReading ? "■ 止める" : "▶ 読み上げ"}
+          dimColor={!isReading}
+          onPress={() => (isReading ? stop() : readAgain())}
+        />
+        {isReading && <Text dimColor> 読み上げ中</Text>}
+      </Box>
+    )
   })
 
   // Whatever the mode, a dialog waiting for the person cuts off the reading and is announced.

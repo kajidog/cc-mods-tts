@@ -62,7 +62,7 @@
     "player": {
       "type": "string",
       "title": "TTS: Player",
-      "description": "How a wav is played. auto: ffplay then powershell.exe on native Windows; ffplay, paplay, aplay, afplay, powershell.exe elsewhere.",
+      "description": "How a wav is played. auto: ffplay then powershell.exe on native Windows; ffplay, paplay, aplay, afplay, powershell.exe elsewhere. claude: Claude Code plays it itself; a Linux or Windows terminal has nothing to play it with, and hears nothing.",
       "default": "auto",
       "options": [
         "auto",
@@ -70,7 +70,8 @@
         "paplay",
         "aplay",
         "afplay",
-        "powershell"
+        "powershell",
+        "claude"
       ]
     },
     "maxCharsPerTurn": {
@@ -95,6 +96,12 @@
       "type": "boolean",
       "title": "TTS: Stop on new prompt",
       "description": "Stop speaking when you submit a new prompt.",
+      "default": true
+    },
+    "replayButton": {
+      "type": "boolean",
+      "title": "TTS: Replay button under answers",
+      "description": "Place a row under each answer with a button that reads it again, whole, and stops it while it is read.",
       "default": true
     },
     "modelPrompt": {

@@ -2,6 +2,21 @@ import { powershellCommand, quotePowerShell } from "./platform"
 
 const TAIL_PADDING_SECONDS = 0.2
 
+/** The player that hands the clip to Claude Code (`$.audio.play`) rather than run a program. */
+export const CLAUDE_PLAYER = "claude"
+
+/** Prints `file` as base64 on one line, for `$.audio.play`, which takes a clip's bytes so. */
+export function base64Command(file: string, isWindows: boolean): string[] {
+  if (isWindows) return powershellCommand(`[Convert]::ToBase64String([IO.File]::ReadAllBytes(${quotePowerShell(file)}))`)
+  // Through stdin: macOS base64 takes no file operand before 13, and GNU base64 wraps its lines.
+  return ["sh", "-c", 'base64 < "$1" | tr -d "\\n"', "tts-base64", file]
+}
+
+/** A command that does nothing: guardedPlayCommand runs it to check the floor before Claude Code plays. */
+export function noopCommand(isWindows: boolean): string[] {
+  return isWindows ? powershellCommand("exit 0") : ["true"]
+}
+
 /** Prints the first audio player found on this machine. */
 export function findPlayerCommand(isWindows: boolean): string[] {
   if (isWindows) return powershellCommand("if (Get-Command ffplay -CommandType Application -ErrorAction SilentlyContinue) { 'ffplay' } else { 'powershell' }")
