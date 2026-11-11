@@ -53,6 +53,8 @@ export type TtsConfig = {
   /** Seconds text before a tool call waits for another session to finish; 0: no limit. */
   maxWaitSeconds: number
   interruptOnPrompt: boolean
+  /** Place a row under each answer whose button reads it again. */
+  replayButton: boolean
   /** Added to the system prompt while replies are read; empty: nothing. */
   modelPrompt: string
   /** Ask for a summary line on long answers, and read only it where an answer has one. */
@@ -74,6 +76,7 @@ export function toConfig(options: PluginOptions): TtsConfig {
     sharePlayback: options.sharePlayback !== false,
     maxWaitSeconds: Math.max(0, Number(options.maxWaitSeconds ?? 60) || 0),
     interruptOnPrompt: options.interruptOnPrompt === true,
+    replayButton: options.replayButton !== false,
     modelPrompt: String(options.modelPrompt ?? "").trim(),
     summary: options.summary === true,
     notices: Object.fromEntries(

@@ -35,6 +35,17 @@ export type EngineState = {
   status: "checking" | "ok" | "down" | "unset" | "off"
 }
 
+/** An answer a row under it reads again: `id` is the row's, as `$.ui.place` was given it. */
+export type AnswerRow = { id: string; text: string }
+
+/** The rows placed under answers, newest last; `reading` is the row whose answer is being read. */
+export type AnswerRows = {
+  rows: AnswerRow[]
+  /** How many rows were ever placed: numbers the next one's id, so a reload never reuses one. */
+  count: number
+  reading: string | null
+}
+
 /** What another mod asks this session to say through `$.tts.speak`. */
 export type TtsSpeakRequest = {
   /** Markdown or plain text, formatted as `/tts test` formats it: code, tables and URLs are not read. */
@@ -78,6 +89,8 @@ declare module "claude-code" {
       audioDirectory: string | null
       /** Names this session on the floor other sessions share, so a reload keeps holding it. */
       floorId: string | null
+      /** The answers the rows under them read again, kept across a reload with the rows. */
+      answers: AnswerRows
       /** Published for other mods: what this session is saying. */
       speech: SpeechState
       /** Published for other mods: the engine in use and whether it answers. */

@@ -1,5 +1,5 @@
-import type { On, ProcessSpawnRequest, SessionMessage, TurnStepResult } from "claude-code"
-import { expect, test } from "claude-code/testing"
+import type { On, ProcessSpawnRequest, RenderElement, SessionMessage, TurnStepResult } from "claude-code"
+import { type Engine, expect, test } from "claude-code/testing"
 
 import { SUMMARY_PROMPT } from "../hooks/summary"
 
@@ -49,6 +49,22 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: undefined }
   })
   on("ui.log", () => ({ value: undefined }))
+  // Rows placed under answers, and clips Claude Code was handed to play (the player `claude`).
+  // `audio.block` holds each clip until its playback is stopped.
+  const placed: string[] = []
+  on("ui.place", (_, e) => {
+    placed.push(e.id)
+    return { value: { isPlaced: true as const, requestId: `row-${e.id}` } }
+  })
+  const audio = { block: false, played: [] as { base64: string | undefined; mime: string | undefined; gain: number | undefined }[], stopped: 0 }
+  on("audio.play", async (_, e, next) => {
+    audio.played.push({ base64: e.clip.base64, mime: e.clip.mime, gain: e.gain })
+    if (audio.block) {
+      await new Promise<void>(resolve => next.signal.addEventListener("abort", () => resolve()))
+      audio.stopped += 1
+    }
+    return { value: undefined }
+  })
   on("turn.start", (_, e) => ({ turnId: e.turnId }))
   on("turn.complete", (_, e) => ({ text: e.answer }))
   // A test may hold the engine check's answer and the removal of audio files, and make synthesis fail.
@@ -100,6 +116,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
       if (code !== 0 && kind === "play" && floor.isMarked) yield { stream: "stderr" as const, text: "tts-floor: yielded\n" }
       if (code !== 0) return { value: { code, signal: null } }
     }
+    if (e.argv.includes("tts-base64")) yield { stream: "stdout" as const, text: "UklGRg==" }
     if (e.argv[0] === "curl" && e.argv.some(arg => arg.includes("/audio_query"))) {
       if (engine.queryExit !== 0) return { value: { code: engine.queryExit, signal: null } }
       yield { stream: "stdout" as const, text: '{"speedScale":1}' }
@@ -118,7 +135,7 @@ function host(on: On, blockedInput?: string, isWindows = false) {
     return { value: { code: 0, signal: null } }
   })
   return {
-    commands, processes, started, cancelled, floor, clock, engine, statuses, toasts,
+    commands, processes, started, cancelled, floor, clock, engine, statuses, toasts, placed, audio,
     /** Waits until synthesis and playback stop asking the host for anything. */
     idle: async () => {
       for (let seen = -1; seen !== commands.length + processes.length;) {
@@ -1158,4 +1175,125 @@ test("a clip read from a file after a refusal leaves no trimmed copy behind", { 
   await settle()
   const removals = observed.commands.filter(argv => argv[0] === "rm").flat()
   expect(removals.some(arg => arg.endsWith("000000.wav.t.wav"))).toBe(true)
+})
+
+/** Mounts the row placed under an answer, as a surface draws it. */
+function mountRow($: Engine, id: string, plugin = "tts") {
+  return $.ui.mount({ plugin: "tts", surface: "terminal", component: "Placed", requestId: `row-${id}`, props: { id, plugin } })
+}
+
+test("an answer gets a row whose button reads it again, whole, past the response budget", { options: { ...options, mode: "notify", maxCharsPerTurn: 10 } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed("直しました。テストも通っています。コミットしますか？"))
+  await observed.idle()
+  expect(observed.placed).toEqual(["answer-1"])
+  const row = await mountRow($, "answer-1")
+  expect((await row.find({ key: "replay" }))?.props.label).toBe("▶ 読み上げ")
+  await row.press({ key: "replay" })
+  await observed.idle()
+  await settle()
+  expect(observed.spoken()).toEqual(["完了しました。", "直しました。", "テストも通っています。", "コミットしますか？"])
+  await row.unmount()
+})
+
+test("the row of the answer being read stops it", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  const row = await mountRow($, "answer-1")
+  expect((await row.find({ key: "replay" }))?.props.label).toBe("■ 止める")
+  await row.press({ key: "replay" })
+  await observed.idle()
+  await settle()
+  expect((await row.find({ key: "replay" }))?.props.label).toBe("▶ 読み上げ")
+  await row.unmount()
+})
+
+test("a row whose answer finishes playing while the row is stored is not left showing it being read", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  // The answer's last clip ends while its row is being stored.
+  on("state.set", async (_, e, next) => {
+    if (e.key === "answers" && (e.value as { count: number }).count === 1 && (e.value as { reading: unknown }).reading === null) {
+      observed.floor.unblock()
+      await observed.idle()
+      await settle()
+    }
+    return next(e)
+  })
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  const row = await mountRow($, "answer-1")
+  expect((await row.find({ key: "replay" }))?.props.label).toBe("▶ 読み上げ")
+  await row.unmount()
+})
+
+test("each answer gets a row of its own, and another plugin's row is left alone", { options: { ...options, mode: "notify" } }, async ($, on) => {
+  const observed = host(on)
+  // The engine's own drawing, which a row the mod passes on falls to.
+  on("ui.render", () => h("Text", {}, "engine") as RenderElement)
+  await $.session.start(start)
+  await $.turn.complete(completed("一つ目です。"))
+  await $.turn.complete(completed("二つ目です。"))
+  await observed.idle()
+  expect(observed.placed).toEqual(["answer-1", "answer-2"])
+  const other = await mountRow($, "answer-1", "someone-else")
+  expect(await other.find({ key: "replay" })).toBeUndefined()
+  await other.unmount()
+})
+
+for (const [name, extra, answer] of [
+  ["with replayButton off", { replayButton: false }, "答えです。"],
+  ["for an empty answer", {}, ""],
+  ["with tts off", { enabled: false }, "答えです。"],
+] as const) {
+  test(`places no row ${name}`, { options: { ...options, ...extra } }, async ($, on) => {
+    const observed = host(on)
+    await $.session.start(start)
+    await $.turn.complete(completed(answer))
+    await observed.idle()
+    expect(observed.placed).toEqual([])
+  })
+}
+
+test("the player claude hands Claude Code the clip as base64 at the volume, after checking the floor", { options: { ...options, mode: "final", player: "claude", volume: 1.5 } }, async ($, on) => {
+  const observed = host(on)
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.audio.played).toEqual([{ base64: "UklGRg==", mime: "audio/wav", gain: 1.5 }])
+  expect(observed.plays()).toEqual(["1"])
+  expect(observed.processes.filter(e => floorKind(e.argv) === "play").map(e => e.argv.slice(6))).toEqual([["true"]])
+  expect(observed.processes.some(e => e.argv.includes("aplay") || e.argv[0] === "claude")).toBe(false)
+})
+
+test("the player claude plays nothing for a session that handed the floor over, and plays once it has it again", { options: { ...options, mode: "final", player: "claude" } }, async ($, on) => {
+  const observed = host(on)
+  let plays = 0
+  observed.floor.exit = kind => (kind === "play" && plays++ === 0 ? 75 : 0)
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  expect(observed.plays()).toEqual(["1", "1"])
+  expect(observed.audio.played.length).toBe(1)
+})
+
+test("a stop ends what Claude Code plays for the player claude", { options: { ...options, mode: "final", player: "claude" } }, async ($, on) => {
+  const observed = host(on)
+  observed.audio.block = true
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  expect(observed.audio.played.length).toBe(1)
+  await $.command.run(command("stop"))
+  await observed.idle()
+  await settle()
+  expect(observed.audio.stopped).toBe(1)
 })
