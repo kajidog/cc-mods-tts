@@ -1132,14 +1132,14 @@ export const register: Register = (on, options) => {
     const completed = await next(e)
     // Placed once the turn has ended, so the row comes after everything the turn wrote.
     if (isEnabled && config.replayButton && e.agentId === undefined && e.reason === "answer" && e.answer.trim() !== "") {
-      // The answer is read now where its mode reads answers and speech is still queued: in stream, it may be done already.
-      const isRead = config.mode !== "notify" && !isTurnMuted && !isDropped && unplayed.size > 0
       const updated = await update($, answerRows, ({ rows, count, reading }) => {
         const row: AnswerRow = { id: `answer-${count + 1}`, text: e.answer }
         return { rows: [...rows, row].slice(-MAX_ANSWER_ROWS), count: count + 1, reading }
       })
       const id = `answer-${updated.count}`
-      if (isRead) publishReading(id)
+      // The answer is read now where its mode reads answers and speech is still queued: in stream, it may be done already.
+      // Asked once the row is stored: the last clip may have ended meanwhile, and nothing would mark the row idle after.
+      if (config.mode !== "notify" && !isTurnMuted && !isDropped && unplayed.size > 0) publishReading(id)
       // Display only: a surface that cannot draw the row, or a Claude Code without rows, leaves the answer as it was.
       await $.ui.place({ id }).then(
         placed => placed.isPlaced || $.ui.log(`tts: no replay row: ${placed.reason}`, { to: "debug" }),

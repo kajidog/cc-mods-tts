@@ -1212,6 +1212,27 @@ test("the row of the answer being read stops it", { options: { ...options, mode:
   await row.unmount()
 })
 
+test("a row whose answer finishes playing while the row is stored is not left showing it being read", { options: { ...options, mode: "final" } }, async ($, on) => {
+  const observed = host(on)
+  observed.floor.exit = kind => (kind === "play" ? "block" : 0)
+  // The answer's last clip ends while its row is being stored.
+  on("state.set", async (_, e, next) => {
+    if (e.key === "answers" && (e.value as { count: number }).count === 1 && (e.value as { reading: unknown }).reading === null) {
+      observed.floor.unblock()
+      await observed.idle()
+      await settle()
+    }
+    return next(e)
+  })
+  await $.session.start(start)
+  await $.turn.complete(completed("答えです。"))
+  await observed.idle()
+  await settle()
+  const row = await mountRow($, "answer-1")
+  expect((await row.find({ key: "replay" }))?.props.label).toBe("▶ 読み上げ")
+  await row.unmount()
+})
+
 test("each answer gets a row of its own, and another plugin's row is left alone", { options: { ...options, mode: "notify" } }, async ($, on) => {
   const observed = host(on)
   // The engine's own drawing, which a row the mod passes on falls to.
