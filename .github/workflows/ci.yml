@@ -36,4 +36,4 @@ jobs:
     with:
       # The mod API is early access: keep the version the mod was last checked with.
       # latest-claude-code.yml checks the newest release every day.
-      claude-code-version: 2.1.296
+      claude-code-version: 2.1.314
